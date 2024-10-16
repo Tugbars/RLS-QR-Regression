@@ -81,6 +81,24 @@ static inline void initialize_regression_state(RegressionState *regression_state
 /**
  * @brief Adds a new data point to the regression model and updates it.
  *
+ * This function adds a new measurement to the regression model. It updates the QR decomposition
+ * incrementally using Givens rotations when a new data point is added. If the buffer is full,
+ * it removes the oldest data point using Givens rotations for downdating. It also handles
+ * reorthogonalization and condition number monitoring.
+ *
+ * **Changes Introduced:**
+ * - **Incremental QR Decomposition with Givens Rotations:**
+ *   - Previously, the QR decomposition was recomputed from scratch when a new data point was added.
+ *   - Now, the function uses Givens rotations in `updateQR_AddRow` and `updateQR_RemoveRow` to
+ *     incrementally update the QR decomposition. This change significantly improves efficiency
+ *     by reducing computational complexity from \( O(n^3) \) to \( O(n^2) \) per update.
+ * - **Optimized Polynomial Basis Computation:**
+ *   - Polynomial terms are computed using incremental multiplication instead of `pow()`.
+ *     This reduces computational overhead and improves numerical stability.
+ * - **Gradient Calculations:**
+ *   - The function now ensures that gradient calculations are accurate by updating the
+ *     coefficients immediately after modifying the QR decomposition.
+ *
  * @param regression_state Pointer to the RegressionState structure that holds the model state.
  * @param measurement The new measurement value to add.
  */
@@ -154,6 +172,23 @@ static void add_data_point_to_regression(RegressionState *regression_state, doub
 /**
  * @brief Updates the QR decomposition by adding a new row using Givens rotations.
  *
+ * This function incrementally updates the existing QR decomposition when a new data point
+ * is added to the regression model. It uses Givens rotations to maintain the upper triangular
+ * structure of the R matrix without recomputing the entire decomposition.
+ *
+ * **Changes Introduced:**
+ * - **Use of Givens Rotations:**
+ *   - Previously, the entire QR decomposition was recomputed from scratch when new data was added.
+ *   - Now, Givens rotations are employed to update the QR factors incrementally.
+ *   - This change improves efficiency by reducing computational load and enables real-time updates.
+ * - **Efficiency and Numerical Stability:**
+ *   - Givens rotations are numerically stable for incremental updates, especially when dealing
+ *     with streaming data or large datasets.
+ *
+ * **Why Givens Rotations Were Introduced:**
+ * - To allow efficient incremental updates to the QR decomposition without full recomputation.
+ * - To enhance numerical stability during the addition of new data points.
+ *
  * @param regression_state Pointer to the RegressionState structure.
  * @param new_row The new row to add (polynomial basis vector).
  * @param new_b The new measurement value.
@@ -200,6 +235,23 @@ static void updateQR_AddRow(RegressionState *regression_state, const double *new
 
 /**
  * @brief Updates the QR decomposition by removing an old row using Givens rotations.
+ *
+ * This function incrementally downdates the existing QR decomposition when an old data point
+ * is removed from the regression model. It uses Givens rotations to adjust the R matrix,
+ * maintaining its upper triangular structure.
+ *
+ * **Changes Introduced:**
+ * - **Use of Givens Rotations for Downdating:**
+ *   - Previously, the QR decomposition was recomputed entirely when old data was removed.
+ *   - Now, Givens rotations are used to efficiently remove the influence of the oldest data point.
+ * - **Efficiency Improvement:**
+ *   - This change reduces computational overhead, making the algorithm suitable for real-time applications.
+ * - **Numerical Stability:**
+ *   - Givens rotations provide a stable method for downdating, minimizing numerical errors.
+ *
+ * **Why Givens Rotations Were Introduced:**
+ * - To enable efficient and stable downdating of the QR decomposition when data points are removed.
+ * - To maintain the numerical integrity of the regression model over time.
  *
  * @param regression_state Pointer to the RegressionState structure.
  * @param old_row The old row to remove (polynomial basis vector).
@@ -248,8 +300,27 @@ static void updateQR_RemoveRow(RegressionState *regression_state, const double *
 /**
  * @brief Recomputes the QR decomposition using optimized Householder reflections.
  *
+ * This function performs a full recomputation of the QR decomposition using Householder reflections
+ * when the condition number exceeds a certain threshold or periodically for numerical stability.
+ * The function has been optimized to reduce computational overhead and improve numerical stability.
+ *
+ * **Changes Introduced:**
+ * - **Optimized Householder Transformations:**
+ *   - The implementation now uses in-place transformations and avoids unnecessary computations.
+ *   - Loop bounds are set precisely to skip zero elements, enhancing efficiency.
+ * - **Polynomial Basis Computation Optimization:**
+ *   - Polynomial terms are calculated using incremental multiplication instead of `pow()`.
+ * - **Regularization Integration:**
+ *   - Regularization terms are added to prevent overfitting and improve numerical stability.
+ *
+ * **Why These Changes Were Introduced:**
+ * - To reduce computational complexity during full recomputation.
+ * - To improve numerical stability by minimizing rounding errors.
+ * - To ensure that the QR decomposition remains accurate over time.
+ *
  * @param regression_state Pointer to the RegressionState structure.
  */
+
 static void recompute_qr_decomposition(RegressionState *regression_state) {
     int num_data_points = regression_state->current_num_points;
     int num_coefficients = regression_state->polynomial_degree + 1;
@@ -378,6 +449,20 @@ static void recompute_qr_decomposition(RegressionState *regression_state) {
 
 /**
  * @brief Solves the upper triangular system to find the regression coefficients.
+ *
+ * This function performs back substitution on the upper triangular matrix R to solve for
+ * the regression coefficients. It ensures that the latest coefficients are used for gradient
+ * calculations and predictions.
+ *
+ * **Changes Introduced:**
+ * - **Immediate Coefficient Update:**
+ *   - Ensures that the regression coefficients are updated immediately after QR updates.
+ * - **Numerical Stability Enhancements:**
+ *   - Safeguards added to handle small diagonal elements and prevent division by zero.
+ *
+ * **Why These Changes Were Introduced:**
+ * - To maintain accurate and up-to-date coefficients for gradient calculations.
+ * - To enhance numerical stability during the back substitution process.
  *
  * @param regression_state Pointer to the RegressionState structure.
  */
