@@ -77,7 +77,7 @@ static void debug_print(int level, const char *fmt, ...) {
     va_end(args);
 }
 
-static void recompute_qr_decomposition(RegressionState *regression_state);
+static void recompute_qr_decomposition(RegressionState *regression_state, const double *measurements);
 static inline void solve_for_coefficients(RegressionState *regression_state);
 static double compute_condition_number(const double R[MAX_POLYNOMIAL_DEGREE + 1][MAX_POLYNOMIAL_DEGREE + 1], int size);
 static void updateQR_AddRow(RegressionState *regression_state, const double *new_row, double new_b);
@@ -94,17 +94,18 @@ static double augmented_matrix_A[MAX_TOTAL_ROWS][MAX_POLYNOMIAL_DEGREE + 1];
 static double augmented_vector_b[MAX_TOTAL_ROWS];
 #endif
 
+
 /**
  * @brief Initializes the RegressionState structure.
  *
  * @param regression_state Pointer to the RegressionState structure to initialize.
  * @param degree The degree of the polynomial (e.g., 2 for quadratic, 3 for cubic).
  */
-void initialize_regression_state(RegressionState *regression_state, uint8_t degree) {
+void initialize_regression_state(RegressionState *regression_state, uint8_t degree, uint16_t max_num_points) {
     DEBUG_PRINT_3("Initializing RegressionState with degree=%u\n", degree);
-    
+
     regression_state->current_num_points = 0;
-    regression_state->max_num_points = RLS_WINDOW;
+    regression_state->max_num_points = max_num_points;
     regression_state->oldest_data_index = 0;
     regression_state->total_data_points_added = 0;
     regression_state->reorthogonalization_counter = 0;
@@ -119,10 +120,13 @@ void initialize_regression_state(RegressionState *regression_state, uint8_t degr
     memset(regression_state->Q_transpose_b, 0, sizeof(regression_state->Q_transpose_b));
     DEBUG_PRINT_2("Upper triangular matrix R and Q^T * b initialized to zero.\n");
 
-    // Reset the measurement buffer within the structure
-    memset(regression_state->measurement_buffer, 0, sizeof(regression_state->measurement_buffer));
-    DEBUG_PRINT_2("Measurement buffer reset.\n");
+    // Initialize column permutations to default ordering
+    for (int i = 0; i <= degree; ++i) {
+        regression_state->col_permutations[i] = i;
+    }
+    DEBUG_PRINT_2("Column permutations initialized to default ordering.\n");
 }
+
 
 /**
  * @brief Adds a new data point to the regression model and updates it.
@@ -135,9 +139,10 @@ void initialize_regression_state(RegressionState *regression_state, uint8_t degr
  * @param regression_state Pointer to the RegressionState structure that holds the model state.
  * @param measurement The new measurement value to add.
  */
-void add_data_point_to_regression(RegressionState *regression_state, double measurement) {
+void add_data_point_to_regression(RegressionState *regression_state, const double *measurements, uint16_t data_index) {
     int num_coefficients = regression_state->polynomial_degree + 1;
-    DEBUG_PRINT_3("Adding new data point: measurement=%.6f\n", measurement);
+    double measurement = measurements[data_index];
+    DEBUG_PRINT_3("Adding new data point: measurement=%.6f at data_index=%u\n", measurement, data_index);
 
     // Generate the index (independent variable) internally
     double x_value = (double)(regression_state->total_data_points_added);
@@ -156,18 +161,14 @@ void add_data_point_to_regression(RegressionState *regression_state, double meas
     updateQR_AddRow(regression_state, new_row, measurement);
     DEBUG_PRINT_3("QR decomposition updated with new data point.\n");
 
-    // Add the current measurement to the buffer
-    regression_state->measurement_buffer[regression_state->total_data_points_added % regression_state->max_num_points] = measurement;
-    DEBUG_PRINT_2("New measurement added to buffer at index %u.\n", regression_state->total_data_points_added % regression_state->max_num_points);
-
     // If buffer is full, remove the oldest data point
     if (regression_state->current_num_points >= regression_state->max_num_points) {
-        uint16_t oldest_index = regression_state->oldest_data_index;
-        double old_measurement = regression_state->measurement_buffer[oldest_index];
-        DEBUG_PRINT_3("Buffer full. Removing oldest data point at index %u with measurement=%.6f.\n", oldest_index, old_measurement);
+        uint16_t oldest_data_index = regression_state->oldest_data_index;
+        double old_measurement = measurements[oldest_data_index];
+        DEBUG_PRINT_3("Buffer full. Removing oldest data point at index %u with measurement=%.6f.\n", oldest_data_index, old_measurement);
 
         // Generate the old_row (polynomial basis vector for the oldest data point)
-        double old_x_value = x_value - regression_state->max_num_points;
+        double old_x_value = (double)(regression_state->total_data_points_added - regression_state->max_num_points);
         x_power = 1.0;
         double old_row[MAX_POLYNOMIAL_DEGREE + 1];
         for (int i = 0; i < num_coefficients; ++i) {
@@ -181,7 +182,7 @@ void add_data_point_to_regression(RegressionState *regression_state, double meas
         DEBUG_PRINT_3("QR decomposition updated by removing oldest data point.\n");
 
         // Update oldest_data_index
-        regression_state->oldest_data_index = (regression_state->oldest_data_index + 1) % regression_state->max_num_points;
+        regression_state->oldest_data_index = oldest_data_index + 1;
         DEBUG_PRINT_3("Oldest data index updated to %u.\n", regression_state->oldest_data_index);
     } else {
         // Buffer is not yet full
@@ -198,7 +199,7 @@ void add_data_point_to_regression(RegressionState *regression_state, double meas
     DEBUG_PRINT_3("Reorthogonalization counter incremented to %u.\n", regression_state->reorthogonalization_counter);
     if (regression_state->reorthogonalization_counter >= REORTHOGONALIZATION_INTERVAL) {
         DEBUG_PRINT_3("Reorthogonalization interval reached. Recomputing QR decomposition.\n");
-        recompute_qr_decomposition(regression_state);
+        recompute_qr_decomposition(regression_state, measurements);
         regression_state->reorthogonalization_counter = 0;  // Reset counter
         DEBUG_PRINT_3("QR decomposition recomputed and counter reset.\n");
     }
@@ -212,7 +213,7 @@ void add_data_point_to_regression(RegressionState *regression_state, double meas
     DEBUG_PRINT_2("Computed condition number: %.6e\n", condition_number);
     if (condition_number > CONDITION_NUMBER_THRESHOLD) {
         DEBUG_PRINT_1("Condition number %.6e exceeds threshold %.6e. Recomputing QR decomposition.\n", condition_number, CONDITION_NUMBER_THRESHOLD);
-        recompute_qr_decomposition(regression_state);
+        recompute_qr_decomposition(regression_state, measurements);
         // Solve for the new coefficients again
         solve_for_coefficients(regression_state);
         DEBUG_PRINT_2("Regression coefficients re-solved after recomputing QR decomposition.\n");
@@ -368,32 +369,35 @@ static void updateQR_RemoveRow(RegressionState *regression_state, const double *
 }
 
 /**
- * @brief Recomputes the QR decomposition using optimized Householder reflections.
+ * @brief Recomputes the QR decomposition using optimized Householder reflections with column pivoting.
  *
  * This function performs a full recomputation of the QR decomposition using Householder reflections
- * when the condition number exceeds a certain threshold or periodically for numerical stability.
- * The function has been optimized to reduce computational overhead and improve numerical stability.
+ * with column pivoting for enhanced numerical stability. Column pivoting rearranges the columns
+ * based on their norms to position the largest possible pivot elements on the diagonal, reducing
+ * potential numerical issues.
  *
  * **Changes Introduced:**
- * - **Optimized Householder Transformations:**
- *   - The implementation now uses in-place transformations and avoids unnecessary computations.
- *   - Loop bounds are set precisely to skip zero elements, enhancing efficiency.
- * - **Polynomial Basis Computation Optimization:**
- *   - Polynomial terms are calculated using incremental multiplication instead of `pow()`.
- * - **Regularization Integration:**
- *   - Regularization terms are added to prevent overfitting and improve numerical stability.
+ * - **Access to External Measurements:**
+ *   - Measurements are accessed directly from the external buffer `measurements`.
+ *   - The function signature now includes `const double *measurements`.
+ * - **Column Pivoting:**
+ *   - Implements column pivoting by tracking and swapping columns based on their norms.
+ *   - Updates the column indices array to keep track of permutations.
+ * - **Memory Optimization:**
+ *   - Uses global scratch space for large arrays to minimize stack usage.
  *
  * **Why These Changes Were Introduced:**
- * - To reduce computational complexity during full recomputation.
- * - To improve numerical stability by minimizing rounding errors.
- * - To ensure that the QR decomposition remains accurate over time.
+ * - To eliminate redundant storage of measurements within `RegressionState`.
+ * - To enhance numerical stability during QR decomposition.
+ * - To minimize stack usage by avoiding large local arrays.
  *
  * @param regression_state Pointer to the RegressionState structure.
+ * @param measurements External buffer containing measurement data.
  */
-static void recompute_qr_decomposition(RegressionState *regression_state) {
+static void recompute_qr_decomposition(RegressionState *regression_state, const double *measurements) {
     int num_data_points = regression_state->current_num_points;
     int num_coefficients = regression_state->polynomial_degree + 1;
-    DEBUG_PRINT_3("Recomputing QR decomposition for RegressionState.\n");
+    DEBUG_PRINT_3("Recomputing QR decomposition with column pivoting for RegressionState.\n");
 
     // Regularization parameter to prevent overfitting
     double regularization_lambda = REGULARIZATION_PARAMETER;
@@ -405,8 +409,8 @@ static void recompute_qr_decomposition(RegressionState *regression_state) {
     // Maximum possible total rows
     int max_total_rows = regression_state->max_num_points + num_coefficients;
 
+    // Use the global scratch space for large arrays
 #ifdef USE_GLOBAL_SCRATCH_SPACE
-    // Use the global arrays
     // Ensure that total_rows does not exceed MAX_TOTAL_ROWS
     if (total_rows > MAX_TOTAL_ROWS) {
         DEBUG_PRINT_1("Error: total_rows (%d) exceeds MAX_TOTAL_ROWS (%d).\n", total_rows, MAX_TOTAL_ROWS);
@@ -419,20 +423,22 @@ static void recompute_qr_decomposition(RegressionState *regression_state) {
 #endif
 
     // Initialize arrays to zero
-#ifdef USE_GLOBAL_SCRATCH_SPACE
     memset(augmented_matrix_A, 0, sizeof(double) * total_rows * (MAX_POLYNOMIAL_DEGREE + 1));
     memset(augmented_vector_b, 0, sizeof(double) * total_rows);
-#else
-    memset(augmented_matrix_A, 0, sizeof(double) * total_rows * (MAX_POLYNOMIAL_DEGREE + 1));
-    memset(augmented_vector_b, 0, sizeof(double) * total_rows);
-#endif
     DEBUG_PRINT_2("Augmented matrices initialized to zero.\n");
+
+    // Initialize column indices for pivoting
+    int col_indices[MAX_POLYNOMIAL_DEGREE + 1];
+    for (int i = 0; i < num_coefficients; ++i) {
+        col_indices[i] = i;
+    }
 
     // Populate the augmented matrix with original data
     for (int i = 0; i < num_data_points; ++i) {
-        int idx = (regression_state->oldest_data_index + i) % regression_state->max_num_points;
+        uint16_t data_index = regression_state->oldest_data_index + i;
         double x = (double)(regression_state->total_data_points_added - num_data_points + i);
-        DEBUG_PRINT_3("Processing data point %d: x=%.2f, y=%.6f\n", i, x, regression_state->measurement_buffer[idx]);
+        double measurement = measurements[data_index];
+        DEBUG_PRINT_3("Processing data point %d: x=%.2f, y=%.6f\n", i, x, measurement);
 
         // Construct the design matrix A with polynomial terms using incremental multiplication
         double x_power = 1.0;  // Start with x^0
@@ -442,7 +448,7 @@ static void recompute_qr_decomposition(RegressionState *regression_state) {
         }
 
         // Measurement vector b (dependent variable)
-        augmented_vector_b[i] = regression_state->measurement_buffer[idx];
+        augmented_vector_b[i] = measurement;
     }
     DEBUG_PRINT_2("Augmented matrix populated with original data.\n");
 
@@ -460,8 +466,50 @@ static void recompute_qr_decomposition(RegressionState *regression_state) {
     memset(regression_state->Q_transpose_b, 0, sizeof(regression_state->Q_transpose_b));
     DEBUG_PRINT_2("Upper triangular matrix R and Q^T * b reset to zero.\n");
 
-    // Perform Householder QR Decomposition with optimizations
+    // Initialize column norms for pivoting
+    double col_norms[MAX_POLYNOMIAL_DEGREE + 1];
+    for (int j = 0; j < num_coefficients; ++j) {
+        double sum = 0.0;
+        for (int i = 0; i < total_rows; ++i) {
+            sum += augmented_matrix_A[i][j] * augmented_matrix_A[i][j];
+        }
+        col_norms[j] = sqrt(sum);
+    }
+
+    // Perform Householder QR Decomposition with column pivoting
     for (int k = 0; k < num_coefficients; ++k) {
+        // Find the column with the maximum norm
+        int max_col = k;
+        double max_norm = col_norms[k];
+        for (int j = k + 1; j < num_coefficients; ++j) {
+            if (col_norms[j] > max_norm) {
+                max_norm = col_norms[j];
+                max_col = j;
+            }
+        }
+
+        // Swap columns in A, col_indices, and col_norms if necessary
+        if (max_col != k) {
+            // Swap columns in A
+            for (int i = 0; i < total_rows; ++i) {
+                double temp = augmented_matrix_A[i][k];
+                augmented_matrix_A[i][k] = augmented_matrix_A[i][max_col];
+                augmented_matrix_A[i][max_col] = temp;
+            }
+
+            // Swap entries in col_indices
+            int temp_idx = col_indices[k];
+            col_indices[k] = col_indices[max_col];
+            col_indices[max_col] = temp_idx;
+
+            // Swap norms
+            double temp_norm = col_norms[k];
+            col_norms[k] = col_norms[max_col];
+            col_norms[max_col] = temp_norm;
+
+            DEBUG_PRINT_2("Swapped columns %d and %d for pivoting.\n", k, max_col);
+        }
+
         // Compute the norm of the k-th column below the diagonal
         double sigma = 0.0;
         for (int i = k; i < total_rows; ++i) {
@@ -479,7 +527,6 @@ static void recompute_qr_decomposition(RegressionState *regression_state) {
 
         // Compute Householder vector
         double vk = augmented_matrix_A[k][k] + ((augmented_matrix_A[k][k] >= 0) ? sigma : -sigma);
-        DEBUG_PRINT_3("Householder vector component vk=%.6f for column %d\n", vk, k);
 
         // Avoid division by zero
         if (fabs(vk) < 1e-12) {
@@ -488,9 +535,11 @@ static void recompute_qr_decomposition(RegressionState *regression_state) {
         }
 
         double beta = 1.0 / (sigma * vk);
-        DEBUG_PRINT_3("Householder transformation parameters: beta=%.6f\n", beta);
 
-        // Update the k-th element of the Householder vector
+        // Apply the Householder transformation to A
+        for (int i = k + 1; i < total_rows; ++i) {
+            augmented_matrix_A[i][k] /= vk;
+        }
         augmented_matrix_A[k][k] = -sigma;
 
         // Apply transformation to the remaining columns
@@ -524,61 +573,217 @@ static void recompute_qr_decomposition(RegressionState *regression_state) {
             augmented_matrix_A[i][k] = 0.0;
         }
         DEBUG_PRINT_3("Zeroed out below-diagonal elements for column %d.\n", k);
+
+        // Update the norms of the remaining columns
+        for (int j = k + 1; j < num_coefficients; ++j) {
+            double sum = 0.0;
+            for (int i = k + 1; i < total_rows; ++i) {
+                sum += augmented_matrix_A[i][j] * augmented_matrix_A[i][j];
+            }
+            col_norms[j] = sqrt(sum);
+        }
     }
 
-    // Extract R and Q^T * b
+    // Extract R and Q^T * b with column permutations
     for (int i = 0; i < num_coefficients; ++i) {
         for (int j = i; j < num_coefficients; ++j) {
             regression_state->upper_triangular_R[i][j] = augmented_matrix_A[i][j];
         }
         regression_state->Q_transpose_b[i] = augmented_vector_b[i];
-        //DEBUG_PRINT_3("Extracted R[%d][%d]=%.6f and Q_transpose_b[%d]=%.6f\n", i, i, regression_state->upper_triangular_R[i][j], i, regression_state->Q_transpose_b[i]);
     }
-    DEBUG_PRINT_3("QR decomposition recomputed and extracted.\n");
+
+    // Store the column permutation indices in the regression state
+    memcpy(regression_state->col_permutations, col_indices, sizeof(int) * num_coefficients);
+    DEBUG_PRINT_3("QR decomposition recomputed with column pivoting.\n");
 }
 
 /**
- * @brief Solves the upper triangular system to find the regression coefficients.
+ * @brief Solves the upper triangular system to find the regression coefficients with column permutations.
  *
  * This function performs back substitution on the upper triangular matrix R to solve for
- * the regression coefficients. It ensures that the latest coefficients are used for gradient
- * calculations and predictions.
+ * the regression coefficients, taking into account any column permutations due to pivoting.
+ * It ensures that the latest coefficients are used for gradient calculations and predictions.
  *
  * **Changes Introduced:**
- * - **Immediate Coefficient Update:**
- *   - Ensures that the regression coefficients are updated immediately after QR updates.
- * - **Numerical Stability Enhancements:**
- *   - Safeguards added to handle small diagonal elements and prevent division by zero.
+ * - **Handling Column Permutations:**
+ *   - Adjusts the back substitution process to account for the column permutations.
+ *   - Rearranges the coefficients to match the original variable ordering.
  *
  * **Why These Changes Were Introduced:**
- * - To maintain accurate and up-to-date coefficients for gradient calculations.
- * - To enhance numerical stability during the back substitution process.
+ * - To correctly solve for coefficients when column pivoting is used.
+ * - To ensure that the coefficients correspond to the correct polynomial terms.
  *
  * @param regression_state Pointer to the RegressionState structure.
  */
 static inline void solve_for_coefficients(RegressionState *regression_state) {
     int num_coefficients = regression_state->polynomial_degree + 1;
-    DEBUG_PRINT_3("Solving for regression coefficients using back substitution.\n");
+    DEBUG_PRINT_3("Solving for regression coefficients using back substitution with column permutations.\n");
 
-    // Perform back substitution to solve R * coefficients = Q^T * b
+    double temp_coefficients[MAX_POLYNOMIAL_DEGREE + 1];
+
+    // Perform back substitution to solve R * x = Q^T * b
     for (int i = num_coefficients - 1; i >= 0; --i) {
         double sum = regression_state->Q_transpose_b[i];
         for (int j = i + 1; j < num_coefficients; ++j) {
-            sum -= regression_state->upper_triangular_R[i][j] * regression_state->coefficients[j];
+            sum -= regression_state->upper_triangular_R[i][j] * temp_coefficients[j];
         }
 
         if (fabs(regression_state->upper_triangular_R[i][i]) < 1e-12) {
             DEBUG_PRINT_1("Warning: Small diagonal element R[%d][%d]=%.6e during back substitution.\n", i, i, regression_state->upper_triangular_R[i][i]);
-            regression_state->coefficients[i] = 0.0;  // Assign zero to avoid division by zero
+            temp_coefficients[i] = 0.0;  // Assign zero to avoid division by zero
         } else {
-            regression_state->coefficients[i] = sum / regression_state->upper_triangular_R[i][i];
-            DEBUG_PRINT_3("Coefficient[%d] solved: %.6f\n", i, regression_state->coefficients[i]);
+            temp_coefficients[i] = sum / regression_state->upper_triangular_R[i][i];
+            DEBUG_PRINT_3("Temporary Coefficient[%d] solved: %.6f\n", i, temp_coefficients[i]);
         }
     }
 
-    DEBUG_PRINT_2("Regression coefficients updated.\n");
+    // Rearrange the solution according to the original column order
+    for (int i = 0; i < num_coefficients; ++i) {
+        int permuted_index = regression_state->col_permutations[i];
+        regression_state->coefficients[permuted_index] = temp_coefficients[i];
+        DEBUG_PRINT_3("Coefficient[%d] set to %.6f (permuted from position %d)\n", permuted_index, temp_coefficients[i], i);
+    }
+
+    DEBUG_PRINT_2("Regression coefficients updated with column permutations.\n");
 }
 
+
+#ifdef USE_IMPROVED_CONDITION_NUMBER
+/**
+ * @brief Computes the 1-norm of the upper triangular matrix R.
+ *
+ * This function calculates the maximum absolute column sum of the upper triangular matrix R,
+ * which is useful for estimating the condition number of R.
+ *
+ * **Why This Function Was Introduced:**
+ * - To provide a more accurate estimation of the matrix norm, which is essential for computing the condition number.
+ * - Utilizing the 1-norm leverages the structure of the upper triangular matrix for efficient computation.
+ *
+ * @param R The upper triangular matrix R.
+ * @param size The size of the matrix (number of coefficients).
+ * @return The 1-norm of matrix R.
+ */
+static double compute_R_norm_1(const double R[MAX_POLYNOMIAL_DEGREE + 1][MAX_POLYNOMIAL_DEGREE + 1], int size) {
+    DEBUG_PRINT_3("Computing the 1-norm of matrix R.\n");
+    double norm = 0.0;
+    for (int j = 0; j < size; ++j) {
+        double sum = 0.0;
+        for (int i = 0; i <= j; ++i) {  // Only upper triangular part
+            sum += fabs(R[i][j]);
+            DEBUG_PRINT_3("Adding |R[%d][%d]|=%.6f to column sum.\n", i, j, fabs(R[i][j]));
+        }
+        DEBUG_PRINT_3("Column %d sum: %.6f\n", j, sum);
+        if (sum > norm) {
+            norm = sum;
+            DEBUG_PRINT_3("Updated norm to %.6f\n", norm);
+        }
+    }
+    DEBUG_PRINT_2("Computed 1-norm of R: %.6f\n", norm);
+    return norm;
+}
+
+/**
+ * @brief Estimates the 1-norm of the inverse of the upper triangular matrix R.
+ *
+ * This function estimates the maximum absolute column sum of the inverse of R without explicitly computing R^{-1}.
+ * It uses an iterative method suitable for upper triangular matrices.
+ *
+ * **Why This Function Was Introduced:**
+ * - To enable accurate estimation of the condition number by computing \|R^{-1}\|_1 efficiently.
+ * - Avoids explicit inversion of R, which can be computationally expensive and numerically unstable.
+ *
+ * @param R The upper triangular matrix R.
+ * @param size The size of the matrix (number of coefficients).
+ * @return The estimated 1-norm of R^{-1}.
+ */
+static double estimate_R_inverse_norm_1(const double R[MAX_POLYNOMIAL_DEGREE + 1][MAX_POLYNOMIAL_DEGREE + 1], int size) {
+    DEBUG_PRINT_3("Estimating the 1-norm of the inverse of matrix R.\n");
+    double x[MAX_POLYNOMIAL_DEGREE + 1];
+    double z[MAX_POLYNOMIAL_DEGREE + 1];
+    double est = 0.0;
+    
+    // Initialize vectors
+    for (int i = 0; i < size; ++i) {
+        x[i] = 1.0 / (double)size;
+        DEBUG_PRINT_3("Initialized x[%d]=%.6f\n", i, x[i]);
+    }
+    
+    int iter = 0;
+    double prev_est = 0.0;
+    const int max_iter = 5;
+    const double tol = 1e-6;
+    
+    do {
+        // Solve R * z = x using back substitution
+        for (int i = size - 1; i >= 0; --i) {
+            double sum = x[i];
+            for (int j = i + 1; j < size; ++j) {
+                sum -= R[i][j] * z[j];
+                DEBUG_PRINT_3("Subtracting R[%d][%d]*z[%d]=%.6f*%.6f from sum.\n", i, j, j, R[i][j], z[j]);
+            }
+            z[i] = sum / R[i][i];
+            DEBUG_PRINT_3("Computed z[%d]=%.6f\n", i, z[i]);
+        }
+        
+        // Compute the 1-norm of z
+        est = 0.0;
+        for (int i = 0; i < size; ++i) {
+            est += fabs(z[i]);
+            DEBUG_PRINT_3("Adding |z[%d]|=%.6f to est.\n", i, fabs(z[i]));
+        }
+        DEBUG_PRINT_2("Current estimate of norm_R_inv: %.6f\n", est);
+        
+        // Normalize z
+        double z_norm = est;
+        for (int i = 0; i < size; ++i) {
+            z[i] /= z_norm;
+            DEBUG_PRINT_3("Normalized z[%d]=%.6f\n", i, z[i]);
+        }
+        
+        // Check for convergence
+        if (fabs(est - prev_est) < tol * est) {
+            DEBUG_PRINT_2("Convergence achieved after %d iterations.\n", iter);
+            break;
+        }
+        
+        // Prepare for next iteration
+        memcpy(x, z, sizeof(double) * size);
+        prev_est = est;
+        iter++;
+        DEBUG_PRINT_3("Iteration %d completed. est=%.6f, prev_est=%.6f\n", iter, est, prev_est);
+    } while (iter < max_iter);
+    
+    DEBUG_PRINT_2("Estimated 1-norm of R^{-1}: %.6f after %d iterations.\n", est, iter);
+    return est;
+}
+
+/**
+ * @brief Computes the condition number of the upper triangular matrix R using the 1-norm.
+ *
+ * This function computes the condition number κ(R) = \|R\|₁ * \|R⁻¹\|₁, providing
+ * a more accurate estimation compared to using only the diagonal elements.
+ *
+ * **Changes Introduced:**
+ * - Uses matrix norms to estimate the condition number more accurately.
+ * - Introduces efficient estimation of \|R⁻¹\|₁ without explicit inversion.
+ *
+ * **Why These Changes Were Introduced:**
+ * - To improve the reliability of the condition number estimation.
+ * - Enhances the ability to detect numerical instability in the regression model.
+ *
+ * @param R The upper triangular matrix R.
+ * @param size The size of the matrix (number of coefficients).
+ * @return The estimated condition number.
+ */
+static double compute_condition_number(const double R[MAX_POLYNOMIAL_DEGREE + 1][MAX_POLYNOMIAL_DEGREE + 1], int size) {
+    DEBUG_PRINT_3("Computing condition number of matrix R using 1-norm.\n");
+    double norm_R = compute_R_norm_1(R, size);
+    double norm_R_inv = estimate_R_inverse_norm_1(R, size);
+    double condition_number = norm_R * norm_R_inv;
+    DEBUG_PRINT_2("Computed condition number: %.6e (norm_R=%.6e, norm_R_inv=%.6e)\n", condition_number, norm_R, norm_R_inv);
+    return condition_number;
+}
+#else  // Original method
 /**
  * @brief Computes the condition number of the upper triangular matrix R using the 2-norm estimation.
  *
@@ -618,6 +823,7 @@ static double compute_condition_number(const double R[MAX_POLYNOMIAL_DEGREE + 1]
 
     return condition_number;
 }
+#endif  // USE_IMPROVED_CONDITION_NUMBER
 
 /**
  * @brief Calculates the first-order gradient (slope) of the polynomial function at a specific point.
@@ -667,98 +873,84 @@ double calculate_second_order_gradient(const RegressionState *regression_state, 
     return second_derivative;
 }
 
+
 /**
- * @brief Tracks the values added to the RLS array and calculates first-order gradients after each addition.
+ * @brief Tracks the values added to the RLS array and calculates gradients after each addition.
+ *
+ * This generalized function calculates gradients (first-order, second-order, etc.) for a given dataset
+ * using Recursive Least Squares (RLS) polynomial regression. It accepts a function pointer to determine
+ * the type of gradient to calculate, making it flexible for various gradient computations.
  *
  * @param measurements Array of measurement values to add to the RLS system.
  * @param length The number of points to add starting from the given start index.
  * @param start_index The index in the measurements array from which to begin adding values.
- * @param degree The degree of the polynomial to use for regression (2 for quadratic, 3 for cubic, etc.).
+ * @param degree The degree of the polynomial to use for regression (e.g., 2 for quadratic, 3 for cubic).
+ * @param calculate_gradient Function pointer to the gradient calculation function (e.g., first-order, second-order).
+ * @param result Pointer to store the gradient calculation results.
  */
-void trackFirstOrderGradients(const double *measurements, uint16_t length, uint16_t start_index, uint8_t degree) {
-    DEBUG_PRINT_3("Tracking first-order gradients.\n");
-    // Initialize the regression state with the specified degree
-    RegressionState regression_state;
-    initialize_regression_state(&regression_state, degree);
-    DEBUG_PRINT_2("Regression state initialized for first-order gradients.\n");
+void trackGradients(
+    const double *measurements,
+    uint16_t length,
+    uint16_t start_index,
+    uint8_t degree,
+    double (*calculate_gradient)(const RegressionState *, double),
+    GradientCalculationResult *result
+) {
+    DEBUG_PRINT_3("Entering trackGradients with startIndex=%u, length=%u, degree=%u\n", start_index, length, degree);
 
-    // Loop through the measurements starting from start_index and add them to RLS
+    // Initialize the result struct
+    result->size = 0;
+    result->valid = false;
+    DEBUG_PRINT_2("Initialized GradientCalculationResult: size=0, valid=false\n");
+
+    // Initialize the regression state
+    RegressionState regression_state;
+    initialize_regression_state(&regression_state, degree, RLS_WINDOW);
+    DEBUG_PRINT_3("RegressionState initialized with degree=%u\n", degree);
+
+    // Loop through the measurements and calculate gradients
     for (uint16_t i = 0; i < length; ++i) {
         uint16_t current_index = start_index + i;
 
         // Add the current measurement to the regression
-        add_data_point_to_regression(&regression_state, measurements[current_index]);
-        DEBUG_PRINT_2("Added measurement %.6f at index %u to regression.\n", measurements[current_index], current_index);
+        add_data_point_to_regression(&regression_state, measurements, current_index);
+        DEBUG_PRINT_3("Added measurement %.6f to RegressionState\n", measurements[current_index]);
 
-        // Get the index of the most recently added data point
+        // Get the x_value corresponding to the current data point
         double x_value = (double)(regression_state.total_data_points_added - 1);
-        DEBUG_PRINT_2("Current x_value: %.2f\n", x_value);
+        DEBUG_PRINT_2("Current x_value: %.2f (total_data_points_added=%u)\n", x_value, regression_state.total_data_points_added);
 
-        // Get the regression coefficients
-        DEBUG_PRINT_3("Current regression coefficients:\n");
-        for (int c = 0; c < regression_state.polynomial_degree + 1; ++c) {
-            DEBUG_PRINT_3("Coefficient[%d] = %.6f\n", c, regression_state.coefficients[c]);
-        }
-
-        // Print the added x and y values
-        DEBUG_PRINT_1("Added to RLS: x = %.2f, y = %.6f\n", x_value, measurements[current_index]);
-
-        // If we have enough points, calculate the first-order gradient
+        // Check if there are enough points to perform regression and calculate gradient
         if (regression_state.current_num_points >= regression_state.polynomial_degree + 1) {
-            double first_order_gradient = calculate_first_order_gradient(&regression_state, x_value);
-            DEBUG_PRINT_1("First-order gradient after addition: %.6f\n", first_order_gradient);
+            // Calculate the gradient using the provided function pointer
+            double gradient = calculate_gradient(&regression_state, x_value);
+            DEBUG_PRINT_1("Calculated gradient: %.6f at x=%.2f\n", gradient, x_value);
+            printf("Calculated gradient: %.6f at x=%.2f\n", gradient, x_value);
+
+
+            // Store the gradient in the result struct if there's space
+            if (result->size < RLS_WINDOW) {
+                result->gradients[result->size++] = gradient;
+                DEBUG_PRINT_2("Stored gradient in result->gradients[%u]\n", result->size - 1);
+            } else {
+                // Handle overflow: log a warning and stop collecting gradients
+                DEBUG_PRINT_1("Gradient array overflow at index %u. Maximum window size reached.\n", result->size);
+                break;
+            }
         } else {
-            DEBUG_PRINT_1("Not enough points to calculate first-order gradient.\n");
+            // Not enough points to calculate gradient
+            DEBUG_PRINT_1("Insufficient points to calculate gradient (current_num_points=%u)\n", regression_state.current_num_points);
         }
     }
 
-    DEBUG_PRINT_3("Completed tracking first-order gradients.\n");
-}
-
-/**
- * @brief Tracks the values added to the RLS array and calculates second-order gradients after each addition.
- *
- * @param measurements Array of measurement values to add to the RLS system.
- * @param length The number of points to add starting from the given start index.
- * @param start_index The index in the measurements array from which to begin adding values.
- * @param degree The degree of the polynomial to use for regression (2 for quadratic, 3 for cubic, etc.).
- */
-void trackSecondOrderGradients(const double *measurements, uint16_t length, uint16_t start_index, uint8_t degree) {
-    DEBUG_PRINT_3("Tracking second-order gradients.\n");
-    // Initialize the regression state with the specified degree
-    RegressionState regression_state;
-    initialize_regression_state(&regression_state, degree);
-    DEBUG_PRINT_2("Regression state initialized for second-order gradients.\n");
-
-    // Loop through the measurements starting from start_index and add them to RLS
-    for (uint16_t i = 0; i < length; ++i) {
-        uint16_t current_index = start_index + i;
-
-        // Add the current measurement to the regression
-        add_data_point_to_regression(&regression_state, measurements[current_index]);
-        DEBUG_PRINT_2("Added measurement %.6f at index %u to regression.\n", measurements[current_index], current_index);
-
-        // Get the index of the most recently added data point
-        double x_value = (double)(regression_state.total_data_points_added - 1);
-        DEBUG_PRINT_2("Current x_value: %.2f\n", x_value);
-
-        // Get the regression coefficients
-        DEBUG_PRINT_3("Current regression coefficients:\n");
-        for (int c = 0; c < regression_state.polynomial_degree + 1; ++c) {
-            DEBUG_PRINT_3("Coefficient[%d] = %.6f\n", c, regression_state.coefficients[c]);
-        }
-
-        // Print the added x and y values
-        DEBUG_PRINT_1("Added to RLS: x = %.2f, y = %.6f\n", x_value, measurements[current_index]);
-
-        // If we have enough points, calculate the second-order gradient
-        if (regression_state.current_num_points >= regression_state.polynomial_degree + 1) {
-            double second_order_gradient = calculate_second_order_gradient(&regression_state, x_value);
-            DEBUG_PRINT_1("Second-order gradient after addition: %.6f\n", second_order_gradient);
-        } else {
-            DEBUG_PRINT_1("Not enough points to calculate second-order gradient.\n");
-        }
+    // Post-processing after collecting gradients
+    if (result->size > 0) {
+        DEBUG_PRINT_2("Collected %u gradients\n", result->size);
+    } else {
+        DEBUG_PRINT_2("No gradients were collected\n");
     }
 
-    DEBUG_PRINT_3("Completed tracking second-order gradients.\n");
+    // Note: Median and MAD calculations are handled in the calling function (e.g., identifyTrends)
+    DEBUG_PRINT_3("Exiting trackGradients\n");
 }
+
