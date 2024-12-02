@@ -47,6 +47,21 @@ typedef enum {
     GRADIENT_ORDER_SECOND
 } GradientOrder;
 
+
+/**
+ * @enum PeakPosition
+ * @brief An enumeration to represent the position relative to a peak.
+ *
+ * This enumeration is used to indicate whether a detected trend is on the left side, right side, or undecided relative to a peak.
+ */
+typedef enum {
+    LEFT_SIDE = -1,                       /**< Indicates that the trend is on the left side of a peak. */
+    RIGHT_SIDE = 1,                       /**< Indicates that the trend is on the right side of a peak. */
+    UNDECIDED = 0,                        /**< Indicates that the trend's position relative to a peak is undecided. */
+    ON_PEAK = 2,                          /**< Indicates that the trend is on the peak. */
+    NEGATIVE_UNDECIDED = 3                /**< Indicates that both sides have negative trends with no significant difference. */
+} PeakPosition;
+
 /**
  * @brief Enumeration for move directions based on trend analysis.
  */
@@ -78,7 +93,7 @@ typedef struct {
 typedef struct {
     GradientTrendIndices *increase;      /**< Pointer to the increase trend information */
     GradientTrendIndices *decrease;      /**< Pointer to the decrease trend information */
-    MoveDirection *moveDirection;        /**< Pointer to the move direction */
+    PeakPosition *moveDirection;         /**< Pointer to the move direction */
     bool *isSignificantPeak;             /**< Pointer to the significant peak flag */
     int16_t *moveAmount;                 /**< Pointer to the move amount */
 } GradientTrendResultBase;
@@ -89,7 +104,7 @@ typedef struct {
 typedef struct {
     GradientTrendIndices absoluteIncrease;    /**< Information about the longest consistent increasing trend */
     GradientTrendIndices absoluteDecrease;    /**< Information about the longest consistent decreasing trend */
-    MoveDirection moveDirection;              /**< Move direction based on the absolute trend */
+    PeakPosition moveDirection;               /**< Move direction based on the absolute trend */
     bool isSignificantPeak;                   /**< Indicates if a significant peak was detected */
     int16_t moveAmountAbsolute;               /**< Amount to move based on absolute trend */
     GradientTrendResultBase base;             /**< Base structure pointing to the above fields */
@@ -101,7 +116,7 @@ typedef struct {
 typedef struct {
     GradientTrendIndices significantIncrease; /**< Information about the longest consistent significant increasing trend */
     GradientTrendIndices significantDecrease; /**< Information about the longest consistent significant decreasing trend */
-    MoveDirection moveDirection;              /**< Move direction based on the significant trend */
+    PeakPosition moveDirection;               /**< Move direction based on the significant trend */
     bool isSignificantPeak;                   /**< Indicates if a significant peak was detected */
     int16_t moveAmountSignificant;            /**< Amount to move based on significant trend */
     GradientTrendResultBase base;             /**< Base structure pointing to the above fields */
@@ -166,7 +181,7 @@ void detectTrends(
  *
  * @return void
  */
-void identifyTrends(
+PeakPosition identifyTrends(
     const double *values,
     uint16_t startIndex,
     uint16_t analysisLength,
