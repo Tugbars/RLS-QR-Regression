@@ -358,7 +358,7 @@ static GradientTrendIndices findConsistentIncreaseInternal(
             longestIncreaseInfo.maxValue = currentMaxGradient;
             longestIncreaseInfo.maxValueIndex = currentMaxGradientIndex;
 
-            printf("Final longest increasing trend from index %u to %u\n",
+            DEBUG_PRINT_2("Final longest increasing trend from index %u to %u\n",
                    longestIncreaseInfo.startIndex, longestIncreaseInfo.endIndex);
         }
     }
@@ -535,7 +535,7 @@ static GradientTrendIndices findConsistentDecreaseInternal(
             longestDecreaseInfo.maxValue = currentMinGradient;
             longestDecreaseInfo.maxValueIndex = currentMinGradientIndex;
 
-            printf("Final longest decreasing trend from index %u to %u\n",
+            DEBUG_PRINT_2("Final longest decreasing trend from index %u to %u\n",
                    longestDecreaseInfo.startIndex, longestDecreaseInfo.endIndex);
         }
     }
@@ -630,9 +630,9 @@ PeakPosition determineMoveDirection(
     }
 
     // **Debugging Output**
-    printf("Adjusted Increase Count: %u, Adjusted Decrease Count: %u\n", increaseCount, decreaseCount);
-    printf("Adjusted Longest Increase: startIndex=%u, endIndex=%u\n", increaseStartIndex, increaseEndIndex);
-    printf("Adjusted Longest Decrease: startIndex=%u, endIndex=%u\n", decreaseStartIndex, decreaseEndIndex);
+    //DEBUG_PRINT_2("Adjusted Increase Count: %u, Adjusted Decrease Count: %u\n", increaseCount, decreaseCount);
+    //DEBUG_PRINT_2("Adjusted Longest Increase: startIndex=%u, endIndex=%u\n", increaseStartIndex, increaseEndIndex);
+    //DEBUG_PRINT_2("Adjusted Longest Decrease: startIndex=%u, endIndex=%u\n", decreaseStartIndex, decreaseEndIndex);
 
     // **Step 2: Define the trend threshold**
     uint16_t trendThreshold = TREND_THRESHOLD; // e.g., TREND_THRESHOLD = RLS_WINDOW / 4
@@ -659,7 +659,7 @@ PeakPosition determineMoveDirection(
     }
 
     // **Debugging Output**
-    printf("Max Gradient: %.6f, Min Gradient: %.6f\n", maxGradient, minGradient);
+    DEBUG_PRINT_1("Max Gradient: %.6f, Min Gradient: %.6f\n", maxGradient, minGradient);
 
     // **Step 5: Determine if gradients are within undecided thresholds**
     bool gradientsWithinUndecidedThresholds = (maxGradient < MAX_GRADIENT_THRESHOLD && minGradient > MIN_GRADIENT_THRESHOLD);
@@ -668,22 +668,22 @@ PeakPosition determineMoveDirection(
     if (!gradientsWithinUndecidedThresholds && (increaseCount >= trendThreshold || decreaseCount >= trendThreshold)) {
         // **Sub-case 1: Significant increase count and gradients**
         if (increaseCount >= trendThreshold && decreaseCount < trendThreshold) {
-            printf("Condition Met: Significant increase count and gradients.\n");
+            DEBUG_PRINT_2("Condition Met: Significant increase count and gradients.\n");
             moveDirection = RIGHT_SIDE;
         }
         // **Sub-case 2: Significant decrease count and gradients**
         else if (decreaseCount >= trendThreshold && increaseCount < trendThreshold) {
-            printf("Condition Met: Significant decrease count and gradients.\n");
+            DEBUG_PRINT_2("Condition Met: Significant decrease count and gradients.\n");
             moveDirection = LEFT_SIDE;
         }
         // **Sub-case 3: Both counts are significant**
         else if (increaseCount >= trendThreshold && decreaseCount >= trendThreshold) {
-            printf("Condition Met: Both counts significant; proceeding to peak verification.\n");
+            DEBUG_PRINT_2("Condition Met: Both counts significant; proceeding to peak verification.\n");
             // Proceed to peak verification
             moveDirection = UNDECIDED; // Temporarily set to UNDECIDED until further checks
         }
     } else {
-        printf("Counts below threshold or gradients within undecided thresholds; proceeding to additional checks.\n");
+        DEBUG_PRINT_1("Counts below threshold or gradients within undecided thresholds; proceeding to additional checks.\n");
 
         // **Sub-step 6.1: Check if gradients are within undecided thresholds**
         if (gradientsWithinUndecidedThresholds) {
@@ -692,7 +692,7 @@ PeakPosition determineMoveDirection(
         }
         // **Sub-step 6.2: Compare gradients in left and right halves**
         else {
-            printf("Gradients exceed undecided thresholds; comparing halves.\n");
+            DEBUG_PRINT_2("Gradients exceed undecided thresholds; comparing halves.\n");
 
             // Split the adjusted gradient array into two halves
             uint16_t midIndex = adjustedGradientSize / 2;
@@ -714,17 +714,17 @@ PeakPosition determineMoveDirection(
             }
 
             // **Debugging Output**
-            printf("Left Max Gradient: %.6f, Right Max Gradient: %.6f\n", leftMax, rightMax);
+            DEBUG_PRINT_2("Left Max Gradient: %.6f, Right Max Gradient: %.6f\n", leftMax, rightMax);
 
             // **Sub-step 6.3: Decide moveDirection based on the comparison**
             if (rightMax > leftMax) {
-                printf("Right half has higher max gradient.\n");
+                DEBUG_PRINT_2("Right half has higher max gradient.\n");
                 moveDirection = RIGHT_SIDE;
             } else if (leftMax > rightMax) {
-                printf("Left half has higher max gradient.\n");
+                DEBUG_PRINT_2("Left half has higher max gradient.\n");
                 moveDirection = LEFT_SIDE;
             } else {
-                printf("Both halves have equal max gradients.\n");
+                DEBUG_PRINT_2("Both halves have equal max gradients.\n");
                 moveDirection = UNDECIDED;
             }
         }
@@ -732,18 +732,18 @@ PeakPosition determineMoveDirection(
 
     // **Step 7: Verify if we are on the peak**
     if (moveDirection == UNDECIDED && increaseCount >= MIN_TREND_COUNT_FOR_PEAK && decreaseCount >= MIN_TREND_COUNT_FOR_PEAK) {
-        printf("Proceeding to peak verification.\n");
+        DEBUG_PRINT_3("Proceeding to peak verification.\n");
 
         // Check that the increasing trend ends immediately before the decreasing trend starts
         if (increaseEndIndex + 1 == decreaseStartIndex) {
-            printf("Increasing trend ends immediately before decreasing trend starts.\n");
+            DEBUG_PRINT_2("Increasing trend ends immediately before decreasing trend starts.\n");
 
             // Check that there are no decreases within the increasing trend
             bool increaseTrendConsistent = true;
             for (uint16_t i = increaseStartIndex; i <= increaseEndIndex; ++i) {
                 if (gradients[i] <= 0.0) { // Assuming 0.0 as the threshold for positivity
                     increaseTrendConsistent = false;
-                    printf("Decrease found within increasing trend at index %u.\n", i);
+                    DEBUG_PRINT_3("Decrease found within increasing trend at index %u.\n", i);
                     break;
                 }
             }
@@ -753,26 +753,26 @@ PeakPosition determineMoveDirection(
             for (uint16_t i = decreaseStartIndex; i <= decreaseEndIndex; ++i) {
                 if (gradients[i] >= 0.0) { // Assuming 0.0 as the threshold for negativity
                     decreaseTrendConsistent = false;
-                    printf("Increase found within decreasing trend at index %u.\n", i);
+                    DEBUG_PRINT_3("Increase found within decreasing trend at index %u.\n", i);
                     break;
                 }
             }
 
             // If both trends are consistent and uninterrupted
             if (increaseTrendConsistent && decreaseTrendConsistent) {
-                printf("Both increasing and decreasing trends are consistent and uninterrupted.\n");
+                DEBUG_PRINT_2("Both increasing and decreasing trends are consistent and uninterrupted.\n");
                 moveDirection = ON_PEAK;
             } else {
-                printf("Trends are not consistent; conditions for being on the peak are not met.\n");
+                DEBUG_PRINT_2("Trends are not consistent; conditions for being on the peak are not met.\n");
             }
         } else {
-            printf("Increasing and decreasing trends are not consecutive.\n");
+            DEBUG_PRINT_2("Increasing and decreasing trends are not consecutive.\n");
         }
     }
 
     // **Step 8: Output a warning if the moveDirection is still undecided**
     if (moveDirection == UNDECIDED) {
-        printf("Warning: Move direction is undecided based on gradient analysis.\n");
+        DEBUG_PRINT_3("Warning: Move direction is undecided based on gradient analysis.\n");
     }
 
     // **Step 9: Return the determined moveDirection**
