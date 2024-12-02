@@ -50,6 +50,30 @@
  */
 #define MAX_ALLOWED_INCREASES 1
 
+/** 
+ * @def TREND_THRESHOLD
+ * @brief Threshold for determining significant trend counts.
+ */
+#define TREND_THRESHOLD (RLS_WINDOW / 4) // For example, 30 / 4 = 7
+
+/** 
+ * @def MIN_GRADIENT_THRESHOLD
+ * @brief Minimum gradient threshold for undecided move direction.
+ */
+#define MIN_GRADIENT_THRESHOLD -0.25
+
+/** 
+ * @def MAX_GRADIENT_THRESHOLD
+ * @brief Maximum gradient threshold for undecided move direction.
+ */
+#define MAX_GRADIENT_THRESHOLD 0.25
+
+/** 
+ * @def MIN_TREND_COUNT_FOR_PEAK
+ * @brief Minimum trend count required to consider being on the peak.
+ */
+#define MIN_TREND_COUNT_FOR_PEAK 5
+
 // Define debug levels
 #define DEBUG_LEVEL 0  // Set to 0, 1, 2, or 3 to enable different levels of debugging
 
@@ -115,28 +139,26 @@ void printTrendDetails(const char* trendName, const GradientTrendIndices* trendI
  * @param result Pointer to the GradientTrendResultAbsolute structure to initialize.
  */
 void initializeGradientTrendResultAbsolute(GradientTrendResultAbsolute *result) {
+    // Initialize fields
+    memset(result, 0, sizeof(GradientTrendResultAbsolute));
     result->absoluteIncrease.startIndex = UINT16_MAX;
     result->absoluteIncrease.endIndex = UINT16_MAX;
-    result->absoluteIncrease.maxValue = 0.0;
     result->absoluteIncrease.maxValueIndex = UINT16_MAX;
-    result->absoluteIncrease.sumGradients = 0.0;
 
     result->absoluteDecrease.startIndex = UINT16_MAX;
     result->absoluteDecrease.endIndex = UINT16_MAX;
-    result->absoluteDecrease.maxValue = 0.0;
     result->absoluteDecrease.maxValueIndex = UINT16_MAX;
-    result->absoluteDecrease.sumGradients = 0.0;
 
-    result->moveDirection = NO_TREND;
+    result->moveDirection = UNDECIDED;
     result->isSignificantPeak = false;
     result->moveAmountAbsolute = 0;
 
-    // Initialize base pointers
-    result->base.increase = &(result->absoluteIncrease);
-    result->base.decrease = &(result->absoluteDecrease);
-    result->base.moveDirection = &(result->moveDirection);
-    result->base.isSignificantPeak = &(result->isSignificantPeak);
-    result->base.moveAmount = &(result->moveAmountAbsolute);
+    // Set up base pointers
+    result->base.increase = &result->absoluteIncrease;
+    result->base.decrease = &result->absoluteDecrease;
+    result->base.moveDirection = &result->moveDirection;
+    result->base.isSignificantPeak = &result->isSignificantPeak;
+    result->base.moveAmount = &result->moveAmountAbsolute;
 }
 
 
@@ -149,29 +171,28 @@ void initializeGradientTrendResultAbsolute(GradientTrendResultAbsolute *result) 
  * @param result Pointer to the GradientTrendResultSignificant structure to initialize.
  */
 void initializeGradientTrendResultSignificant(GradientTrendResultSignificant *result) {
+    // Initialize fields
+    memset(result, 0, sizeof(GradientTrendResultSignificant));
     result->significantIncrease.startIndex = UINT16_MAX;
     result->significantIncrease.endIndex = UINT16_MAX;
-    result->significantIncrease.maxValue = 0.0;
     result->significantIncrease.maxValueIndex = UINT16_MAX;
-    result->significantIncrease.sumGradients = 0.0;
 
     result->significantDecrease.startIndex = UINT16_MAX;
     result->significantDecrease.endIndex = UINT16_MAX;
-    result->significantDecrease.maxValue = 0.0;
     result->significantDecrease.maxValueIndex = UINT16_MAX;
-    result->significantDecrease.sumGradients = 0.0;
 
-    result->moveDirection = NO_TREND;
+    result->moveDirection = UNDECIDED;
     result->isSignificantPeak = false;
     result->moveAmountSignificant = 0;
 
-    // Initialize base pointers
-    result->base.increase = &(result->significantIncrease);
-    result->base.decrease = &(result->significantDecrease);
-    result->base.moveDirection = &(result->moveDirection);
-    result->base.isSignificantPeak = &(result->isSignificantPeak);
-    result->base.moveAmount = &(result->moveAmountSignificant);
+    // Set up base pointers
+    result->base.increase = &result->significantIncrease;
+    result->base.decrease = &result->significantDecrease;
+    result->base.moveDirection = &result->moveDirection;
+    result->base.isSignificantPeak = &result->isSignificantPeak;
+    result->base.moveAmount = &result->moveAmountSignificant;
 }
+
 
 /**
  * @brief Finds the longest consistent increasing trend in the gradient array based on a specified threshold.
@@ -182,10 +203,9 @@ void initializeGradientTrendResultSignificant(GradientTrendResultSignificant *re
  * indices of the longest consistent increase, the maximum gradient value within that trend,
  * and the sum of gradients within the trend.
  *
- * @param gradients The array of gradient values to analyze.
- * @param startIndex The starting index in the original data array.
- * @param windowSize The number of elements in the gradient array to analyze.
- * @param threshold The threshold above which gradients are considered significant.
+ * @param gradients   The array of gradient values to analyze.
+ * @param windowSize  The number of elements in the gradient array to analyze.
+ * @param threshold   The threshold above which gradients are considered significant.
  * @return GradientTrendIndices A structure containing the trend information.
  */
 /**
@@ -202,87 +222,103 @@ void initializeGradientTrendResultSignificant(GradientTrendResultSignificant *re
  * @param threshold   The threshold above which gradients are considered significant.
  * @return GradientTrendIndices A structure containing the trend information.
  */
-GradientTrendIndices findConsistentIncreaseInternal(
+static GradientTrendIndices findConsistentIncreaseInternal(
     const double *gradients,
     uint16_t windowSize,
     double threshold
 ) {
     DEBUG_PRINT_3("Entering findConsistentIncreaseInternal\n");
 
-    // Structure to store the longest increasing trend found
+    // **Initialize the structure to store the longest increasing trend found**
     GradientTrendIndices longestIncreaseInfo;
     memset(&longestIncreaseInfo, 0, sizeof(GradientTrendIndices));
-    longestIncreaseInfo.startIndex = UINT16_MAX;
+    longestIncreaseInfo.startIndex = UINT16_MAX;      // Initialize to UINT16_MAX to indicate invalid index
     longestIncreaseInfo.endIndex = UINT16_MAX;
     longestIncreaseInfo.maxValueIndex = UINT16_MAX;
 
-    // Structure to store the current increasing trend being tracked
+    // **Initialize the structure to store the current increasing trend being tracked**
     GradientTrendIndices currentIncreaseInfo;
     memset(&currentIncreaseInfo, 0, sizeof(GradientTrendIndices));
     currentIncreaseInfo.startIndex = UINT16_MAX;
     currentIncreaseInfo.endIndex = UINT16_MAX;
     currentIncreaseInfo.maxValueIndex = UINT16_MAX;
 
-    bool trackingIncrease = false;       // Flag to indicate if we're currently tracking an increase
-    int consecutiveDecreaseCount = 0;    // Counter for consecutive decreases within an increasing trend
-    double currentMaxGradient = -INFINITY;  // Maximum gradient within the current increasing trend
+    bool trackingIncrease = false;         // Flag to indicate if we're currently tracking an increase
+    int consecutiveDecreaseCount = 0;      // Counter for consecutive decreases within an increasing trend
+    double currentMaxGradient = -INFINITY; // Maximum gradient within the current increasing trend
     uint16_t currentMaxGradientIndex = UINT16_MAX; // Index of the maximum gradient within the current increasing trend
 
     DEBUG_PRINT_1("Threshold for Increase: %.6f\n", threshold);
 
-    // Iterate through the gradient array within the specified window size
+    // **Iterate through the gradient array within the specified window size**
     for (uint16_t i = 0; i < windowSize; ++i) {
-        double gradient = gradients[i];
-        uint16_t currentIndex = i;
+        double gradient = gradients[i];    // Current gradient value
+        uint16_t currentIndex = i;         // Current index in the gradient array
 
-        // Ignore NaN values
+        // **Ignore NaN values to prevent invalid calculations**
         if (isnan(gradient)) continue;
 
         DEBUG_PRINT_2("Gradient at index %u: %.6f\n", currentIndex, gradient);
 
+        // **Check if the current gradient exceeds the specified threshold**
         if (gradient > threshold) {  // Significant positive gradient
             if (!trackingIncrease) {
-                // Start tracking a new increasing trend
+                // **Start tracking a new increasing trend**
+
+                // Set the start and end indices to the current index
                 currentIncreaseInfo.startIndex = currentIndex;
                 currentIncreaseInfo.endIndex = currentIndex;
-                trackingIncrease = true;
-                consecutiveDecreaseCount = 0;
-                currentMaxGradient = gradient;
-                currentMaxGradientIndex = currentIndex;
-                currentIncreaseInfo.sumGradients = gradient;
+
+                trackingIncrease = true;               // Set the flag indicating we're tracking an increase
+                consecutiveDecreaseCount = 0;          // Reset the consecutive decrease counter
+                currentMaxGradient = gradient;         // Initialize the current maximum gradient
+                currentMaxGradientIndex = currentIndex; // Initialize the index of the maximum gradient
+                currentIncreaseInfo.sumGradients = gradient; // Initialize the sum of gradients
 
                 DEBUG_PRINT_3("Started new increasing trend at index %u\n", currentIndex);
             } else {
-                // Continue tracking the current increasing trend
-                currentIncreaseInfo.endIndex = currentIndex;
+                // **Continue tracking the current increasing trend**
 
-                // Update the maximum gradient within the current trend
+                currentIncreaseInfo.endIndex = currentIndex; // Update the end index of the current trend
+
+                // **Update the maximum gradient within the current trend**
                 if (gradient > currentMaxGradient) {
                     currentMaxGradient = gradient;
                     currentMaxGradientIndex = currentIndex;
                 }
 
-                // Reset the decrease counter since we have an increase
+                // **Reset the consecutive decrease counter since we have an increase**
                 consecutiveDecreaseCount = 0;
 
-                // Add to sum of gradients
+                // **Add the current gradient to the sum of gradients**
                 currentIncreaseInfo.sumGradients += gradient;
             }
 
         } else {
-            if (trackingIncrease) {
-                consecutiveDecreaseCount++;
+            // **Handle gradients that do not exceed the threshold**
 
-                // Add to sum of gradients even for minor decreases
+            if (trackingIncrease) {
+                // **We are currently tracking an increase, but encountered a decrease or insignificant gradient**
+
+                consecutiveDecreaseCount++; // Increment the consecutive decrease counter
+
+                // **Add the current gradient to the sum, even if it's a decrease**
                 currentIncreaseInfo.sumGradients += gradient;
 
+                // **Check if the consecutive decreases exceed the allowed limit**
                 if (consecutiveDecreaseCount > MAX_ALLOWED_DECREASES) {
-                    // Check if the current trend is the longest so far
+                    // **Consider ending the current increasing trend**
+
+                    // **Calculate the length of the current increasing trend**
                     uint16_t currentTrendLength = currentIncreaseInfo.endIndex - currentIncreaseInfo.startIndex + 1;
+
+                    // **Calculate the length of the longest increasing trend found so far**
                     uint16_t longestTrendLength = (longestIncreaseInfo.startIndex != UINT16_MAX) ?
                         (longestIncreaseInfo.endIndex - longestIncreaseInfo.startIndex + 1) : 0;
 
+                    // **Compare the lengths to determine if the current trend is the longest**
                     if (currentTrendLength > longestTrendLength) {
+                        // **Update the longest increasing trend information**
                         longestIncreaseInfo = currentIncreaseInfo;
                         longestIncreaseInfo.maxValue = currentMaxGradient;
                         longestIncreaseInfo.maxValueIndex = currentMaxGradientIndex;
@@ -291,27 +327,33 @@ GradientTrendIndices findConsistentIncreaseInternal(
                                      longestIncreaseInfo.startIndex, longestIncreaseInfo.endIndex);
                     }
 
-                    // Stop tracking the current increasing trend
+                    // **Stop tracking the current increasing trend**
                     trackingIncrease = false;
-                    consecutiveDecreaseCount = 0;
+                    consecutiveDecreaseCount = 0; // Reset the counter
 
-                    // Reset currentIncreaseInfo
+                    // **Reset the current increasing trend information**
                     memset(&currentIncreaseInfo, 0, sizeof(GradientTrendIndices));
                     currentIncreaseInfo.startIndex = UINT16_MAX;
                     currentIncreaseInfo.endIndex = UINT16_MAX;
                     currentIncreaseInfo.maxValueIndex = UINT16_MAX;
                 }
             }
+            // **If not tracking an increase, do nothing for decreases**
         }
     }
 
-    // After iterating, check if the current trend is the longest
+    // **After iterating, check if the current trend is the longest**
     if (trackingIncrease) {
+        // **Calculate the length of the current increasing trend**
         uint16_t currentTrendLength = currentIncreaseInfo.endIndex - currentIncreaseInfo.startIndex + 1;
+
+        // **Calculate the length of the longest increasing trend found so far**
         uint16_t longestTrendLength = (longestIncreaseInfo.startIndex != UINT16_MAX) ?
             (longestIncreaseInfo.endIndex - longestIncreaseInfo.startIndex + 1) : 0;
 
+        // **Compare the lengths to determine if the current trend is the longest**
         if (currentTrendLength > longestTrendLength) {
+            // **Update the longest increasing trend information**
             longestIncreaseInfo = currentIncreaseInfo;
             longestIncreaseInfo.maxValue = currentMaxGradient;
             longestIncreaseInfo.maxValueIndex = currentMaxGradientIndex;
@@ -323,7 +365,8 @@ GradientTrendIndices findConsistentIncreaseInternal(
 
     DEBUG_PRINT_3("Exiting findConsistentIncreaseInternal\n");
 
-    return longestIncreaseInfo;  // Return the longest increasing trend information
+    // **Return the longest increasing trend information**
+    return longestIncreaseInfo;
 }
 
 
@@ -342,87 +385,117 @@ GradientTrendIndices findConsistentIncreaseInternal(
  * @param threshold The threshold below which gradients are considered significant.
  * @return GradientTrendIndices A structure containing the trend information.
  */
-GradientTrendIndices findConsistentDecreaseInternal(
+/**
+ * @brief Finds the longest consistent decreasing trend in the gradient array based on a specified threshold.
+ *
+ * This function scans through an array of gradient values to identify the longest consistent decreasing trend
+ * that exceeds a specified threshold. It allows a specified number of minor consecutive increases to account
+ * for small fluctuations. The function returns a `GradientTrendIndices` struct containing the start and end
+ * indices of the longest consistent decrease, the minimum gradient value within that trend,
+ * and the sum of gradients within the trend.
+ *
+ * @param gradients   The array of gradient values to analyze.
+ * @param windowSize  The number of elements in the gradient array to analyze.
+ * @param threshold   The threshold below which gradients are considered significant.
+ * @return GradientTrendIndices A structure containing the trend information.
+ */
+static GradientTrendIndices findConsistentDecreaseInternal(
     const double *gradients,
     uint16_t windowSize,
     double threshold
 ) {
     DEBUG_PRINT_3("Entering findConsistentDecreaseInternal\n");
 
-    // Structure to store the longest decreasing trend found
+    // **Initialize the structure to store the longest decreasing trend found**
     GradientTrendIndices longestDecreaseInfo;
     memset(&longestDecreaseInfo, 0, sizeof(GradientTrendIndices));
-    longestDecreaseInfo.startIndex = UINT16_MAX;
+    longestDecreaseInfo.startIndex = UINT16_MAX;      // Initialize to UINT16_MAX to indicate invalid index
     longestDecreaseInfo.endIndex = UINT16_MAX;
     longestDecreaseInfo.maxValueIndex = UINT16_MAX;
 
-    // Structure to store the current decreasing trend being tracked
+    // **Initialize the structure to store the current decreasing trend being tracked**
     GradientTrendIndices currentDecreaseInfo;
     memset(&currentDecreaseInfo, 0, sizeof(GradientTrendIndices));
     currentDecreaseInfo.startIndex = UINT16_MAX;
     currentDecreaseInfo.endIndex = UINT16_MAX;
     currentDecreaseInfo.maxValueIndex = UINT16_MAX;
 
-    bool trackingDecrease = false;        // Flag to indicate if we're currently tracking a decrease
-    int consecutiveIncreaseCount = 0;     // Counter for consecutive increases within a decreasing trend
-    double currentMinGradient = INFINITY; // Minimum gradient within the current decreasing trend
+    bool trackingDecrease = false;          // Flag to indicate if we're currently tracking a decrease
+    int consecutiveIncreaseCount = 0;       // Counter for consecutive increases within a decreasing trend
+    double currentMinGradient = INFINITY;   // Minimum gradient within the current decreasing trend
     uint16_t currentMinGradientIndex = UINT16_MAX; // Index of the minimum gradient within the current decreasing trend
 
     DEBUG_PRINT_1("Threshold for Decrease: %.6f\n", threshold);
 
-    // Iterate through the gradient array within the specified window size
+    // **Iterate through the gradient array within the specified window size**
     for (uint16_t i = 0; i < windowSize; ++i) {
-        double gradient = gradients[i];
-        uint16_t currentIndex = i;
+        double gradient = gradients[i];    // Current gradient value
+        uint16_t currentIndex = i;         // Current index in the gradient array
 
-        // Ignore NaN values
+        // **Ignore NaN values to prevent invalid calculations**
         if (isnan(gradient)) continue;
 
         DEBUG_PRINT_2("Gradient at index %u: %.6f\n", currentIndex, gradient);
 
+        // **Check if the current gradient is less than the specified threshold (negative)**
         if (gradient < threshold) {  // Significant negative gradient
             if (!trackingDecrease) {
-                // Start tracking a new decreasing trend
+                // **Start tracking a new decreasing trend**
+
+                // Set the start and end indices to the current index
                 currentDecreaseInfo.startIndex = currentIndex;
                 currentDecreaseInfo.endIndex = currentIndex;
-                trackingDecrease = true;
-                consecutiveIncreaseCount = 0;
-                currentMinGradient = gradient;
-                currentMinGradientIndex = currentIndex;
-                currentDecreaseInfo.sumGradients = gradient;
+
+                trackingDecrease = true;                // Set the flag indicating we're tracking a decrease
+                consecutiveIncreaseCount = 0;           // Reset the consecutive increase counter
+                currentMinGradient = gradient;          // Initialize the current minimum gradient
+                currentMinGradientIndex = currentIndex; // Initialize the index of the minimum gradient
+                currentDecreaseInfo.sumGradients = gradient; // Initialize the sum of gradients
 
                 DEBUG_PRINT_3("Started new decreasing trend at index %u\n", currentIndex);
             } else {
-                // Continue tracking the current decreasing trend
-                currentDecreaseInfo.endIndex = currentIndex;
+                // **Continue tracking the current decreasing trend**
 
-                // Update the minimum gradient within the current trend
+                currentDecreaseInfo.endIndex = currentIndex; // Update the end index of the current trend
+
+                // **Update the minimum gradient within the current trend**
                 if (gradient < currentMinGradient) {
                     currentMinGradient = gradient;
                     currentMinGradientIndex = currentIndex;
                 }
 
-                // Reset the increase counter since we have a decrease
+                // **Reset the consecutive increase counter since we have a decrease**
                 consecutiveIncreaseCount = 0;
 
-                // Add to sum of gradients
+                // **Add the current gradient to the sum of gradients**
                 currentDecreaseInfo.sumGradients += gradient;
             }
 
         } else {
-            if (trackingDecrease) {
-                consecutiveIncreaseCount++;
+            // **Handle gradients that do not exceed the negative threshold**
 
-                // Add to sum of gradients even for minor increases
+            if (trackingDecrease) {
+                // **We are currently tracking a decrease, but encountered an increase or insignificant gradient**
+
+                consecutiveIncreaseCount++; // Increment the consecutive increase counter
+
+                // **Add the current gradient to the sum, even if it's an increase**
                 currentDecreaseInfo.sumGradients += gradient;
 
+                // **Check if the consecutive increases exceed the allowed limit**
                 if (consecutiveIncreaseCount > MAX_ALLOWED_INCREASES) {
-                    // Check if the current trend is the longest so far
+                    // **Consider ending the current decreasing trend**
+
+                    // **Calculate the length of the current decreasing trend**
                     uint16_t currentTrendLength = currentDecreaseInfo.endIndex - currentDecreaseInfo.startIndex + 1;
+
+                    // **Calculate the length of the longest decreasing trend found so far**
                     uint16_t longestTrendLength = (longestDecreaseInfo.startIndex != UINT16_MAX) ?
                         (longestDecreaseInfo.endIndex - longestDecreaseInfo.startIndex + 1) : 0;
 
+                    // **Compare the lengths to determine if the current trend is the longest**
                     if (currentTrendLength > longestTrendLength) {
+                        // **Update the longest decreasing trend information**
                         longestDecreaseInfo = currentDecreaseInfo;
                         longestDecreaseInfo.maxValue = currentMinGradient;
                         longestDecreaseInfo.maxValueIndex = currentMinGradientIndex;
@@ -431,27 +504,33 @@ GradientTrendIndices findConsistentDecreaseInternal(
                                      longestDecreaseInfo.startIndex, longestDecreaseInfo.endIndex);
                     }
 
-                    // Stop tracking the current decreasing trend
+                    // **Stop tracking the current decreasing trend**
                     trackingDecrease = false;
-                    consecutiveIncreaseCount = 0;
+                    consecutiveIncreaseCount = 0; // Reset the counter
 
-                    // Reset currentDecreaseInfo
+                    // **Reset the current decreasing trend information**
                     memset(&currentDecreaseInfo, 0, sizeof(GradientTrendIndices));
                     currentDecreaseInfo.startIndex = UINT16_MAX;
                     currentDecreaseInfo.endIndex = UINT16_MAX;
                     currentDecreaseInfo.maxValueIndex = UINT16_MAX;
                 }
             }
+            // **If not tracking a decrease, do nothing for increases**
         }
     }
 
-    // After iterating, check if the current trend is the longest
+    // **After iterating, check if the current trend is the longest**
     if (trackingDecrease) {
+        // **Calculate the length of the current decreasing trend**
         uint16_t currentTrendLength = currentDecreaseInfo.endIndex - currentDecreaseInfo.startIndex + 1;
+
+        // **Calculate the length of the longest decreasing trend found so far**
         uint16_t longestTrendLength = (longestDecreaseInfo.startIndex != UINT16_MAX) ?
             (longestDecreaseInfo.endIndex - longestDecreaseInfo.startIndex + 1) : 0;
 
+        // **Compare the lengths to determine if the current trend is the longest**
         if (currentTrendLength > longestTrendLength) {
+            // **Update the longest decreasing trend information**
             longestDecreaseInfo = currentDecreaseInfo;
             longestDecreaseInfo.maxValue = currentMinGradient;
             longestDecreaseInfo.maxValueIndex = currentMinGradientIndex;
@@ -463,11 +542,243 @@ GradientTrendIndices findConsistentDecreaseInternal(
 
     DEBUG_PRINT_3("Exiting findConsistentDecreaseInternal\n");
 
-    return longestDecreaseInfo;  // Return the longest decreasing trend information
+    // **Return the longest decreasing trend information**
+    return longestDecreaseInfo;
 }
 
+/**
+ * @brief Determines the move direction based on consistent increase and decrease counts.
+ *
+ * This function evaluates the consistent increase and decrease counts from the gradient trends
+ * and the gradient array to determine the move direction in the sliding window analysis.
+ * It follows a series of logical steps, using thresholds and additional checks, to decide
+ * whether to move left, right, or consider the position as on the peak or undecided.
+ *
+ * @param longestIncrease Pointer to the longest consistent increasing trend indices.
+ * @param longestDecrease Pointer to the longest consistent decreasing trend indices.
+ * @param gradients       The array of gradient values to analyze.
+ * @param gradientSize    The number of elements in the gradient array.
+ * @return PeakPosition The determined move direction.
+ */
+/**
+ * @brief Determines the move direction based on consistent increase and decrease counts.
+ *
+ * This function evaluates the consistent increase and decrease counts from the gradient trends
+ * and the gradient array to determine the move direction in the sliding window analysis.
+ * It follows a series of logical steps, using thresholds and additional checks, to decide
+ * whether to move left, right, or consider the position as on the peak or undecided.
+ *
+ * @param longestIncrease Pointer to the longest consistent increasing trend indices.
+ * @param longestDecrease Pointer to the longest consistent decreasing trend indices.
+ * @param gradients       The array of gradient values to analyze.
+ * @param gradientSize    The number of elements in the gradient array.
+ * @return PeakPosition The determined move direction.
+ */
+/**
+ * @brief Determines the move direction based on consistent increase and decrease counts.
+ *
+ * This function evaluates the consistent increase and decrease counts from the gradient trends
+ * and the gradient array to determine the move direction in the sliding window analysis.
+ * It follows a series of logical steps, using thresholds and additional checks, to decide
+ * whether to move left, right, or consider the position as on the peak or undecided.
+ *
+ * @param longestIncrease Pointer to the longest consistent increasing trend indices.
+ * @param longestDecrease Pointer to the longest consistent decreasing trend indices.
+ * @param gradients       The array of gradient values to analyze.
+ * @param gradientSize    The number of elements in the gradient array.
+ * @return PeakPosition The determined move direction.
+ */
+PeakPosition determineMoveDirection(
+    const GradientTrendIndices* longestIncrease,
+    const GradientTrendIndices* longestDecrease,
+    const double* gradients,
+    uint16_t gradientSize
+) {
+    // **Adjust gradientSize and gradients to ignore the first value**
+    const double* adjustedGradients = &gradients[1];
+    uint16_t adjustedGradientSize = gradientSize - 1;
 
-// SIGNIFICANCE_FACTOR * gradCalcResultAll.mad  // Adjust threshold as needed
+    // **Step 1: Calculate the counts of consistent increases and decreases**
+    // Initialize increaseCount and decreaseCount to zero.
+    uint16_t increaseCount = 0;
+    uint16_t decreaseCount = 0;
+
+    // Adjust the longest increase trend indices if they include the first gradient value
+    uint16_t increaseStartIndex = longestIncrease->startIndex;
+    uint16_t increaseEndIndex = longestIncrease->endIndex;
+
+    if (increaseStartIndex == 0) {
+        increaseStartIndex = 1;
+    }
+
+    // Calculate the number of points in the consistent increasing trend
+    if (increaseStartIndex != UINT16_MAX && increaseEndIndex != UINT16_MAX && increaseEndIndex >= increaseStartIndex) {
+        increaseCount = increaseEndIndex - increaseStartIndex + 1;
+    }
+
+    // Adjust the longest decrease trend indices if they include the first gradient value
+    uint16_t decreaseStartIndex = longestDecrease->startIndex;
+    uint16_t decreaseEndIndex = longestDecrease->endIndex;
+
+    if (decreaseStartIndex == 0) {
+        decreaseStartIndex = 1;
+    }
+
+    // Calculate the number of points in the consistent decreasing trend
+    if (decreaseStartIndex != UINT16_MAX && decreaseEndIndex != UINT16_MAX && decreaseEndIndex >= decreaseStartIndex) {
+        decreaseCount = decreaseEndIndex - decreaseStartIndex + 1;
+    }
+
+    // **Debugging Output**
+    printf("Adjusted Increase Count: %u, Adjusted Decrease Count: %u\n", increaseCount, decreaseCount);
+    printf("Adjusted Longest Increase: startIndex=%u, endIndex=%u\n", increaseStartIndex, increaseEndIndex);
+    printf("Adjusted Longest Decrease: startIndex=%u, endIndex=%u\n", decreaseStartIndex, decreaseEndIndex);
+
+    // **Step 2: Define the trend threshold**
+    uint16_t trendThreshold = TREND_THRESHOLD; // e.g., TREND_THRESHOLD = RLS_WINDOW / 4
+
+    // **Debugging Output**
+    printf("Trend Threshold: %u\n", trendThreshold);
+
+    // **Step 3: Initialize the moveDirection to UNDECIDED**
+    PeakPosition moveDirection = UNDECIDED;
+
+    // **Step 4: Analyze the maximum and minimum gradient values**
+    double maxGradient = -INFINITY;
+    double minGradient = INFINITY;
+
+    // Iterate over the adjusted gradient array to find the global max and min gradients
+    for (uint16_t i = 0; i < adjustedGradientSize; ++i) {
+        double gradient = adjustedGradients[i];
+        if (gradient > maxGradient) {
+            maxGradient = gradient;
+        }
+        if (gradient < minGradient) {
+            minGradient = gradient;
+        }
+    }
+
+    // **Debugging Output**
+    printf("Max Gradient: %.6f, Min Gradient: %.6f\n", maxGradient, minGradient);
+
+    // **Step 5: Determine if gradients are within undecided thresholds**
+    bool gradientsWithinUndecidedThresholds = (maxGradient < MAX_GRADIENT_THRESHOLD && minGradient > MIN_GRADIENT_THRESHOLD);
+
+    // **Step 6: Decide moveDirection based on counts and gradients**
+    if (!gradientsWithinUndecidedThresholds && (increaseCount >= trendThreshold || decreaseCount >= trendThreshold)) {
+        // **Sub-case 1: Significant increase count and gradients**
+        if (increaseCount >= trendThreshold && decreaseCount < trendThreshold) {
+            printf("Condition Met: Significant increase count and gradients.\n");
+            moveDirection = RIGHT_SIDE;
+        }
+        // **Sub-case 2: Significant decrease count and gradients**
+        else if (decreaseCount >= trendThreshold && increaseCount < trendThreshold) {
+            printf("Condition Met: Significant decrease count and gradients.\n");
+            moveDirection = LEFT_SIDE;
+        }
+        // **Sub-case 3: Both counts are significant**
+        else if (increaseCount >= trendThreshold && decreaseCount >= trendThreshold) {
+            printf("Condition Met: Both counts significant; proceeding to peak verification.\n");
+            // Proceed to peak verification
+            moveDirection = UNDECIDED; // Temporarily set to UNDECIDED until further checks
+        }
+    } else {
+        printf("Counts below threshold or gradients within undecided thresholds; proceeding to additional checks.\n");
+
+        // **Sub-step 6.1: Check if gradients are within undecided thresholds**
+        if (gradientsWithinUndecidedThresholds) {
+            printf("All gradients are within undecided thresholds (%.2f, %.2f).\n", MIN_GRADIENT_THRESHOLD, MAX_GRADIENT_THRESHOLD);
+            moveDirection = UNDECIDED;
+        }
+        // **Sub-step 6.2: Compare gradients in left and right halves**
+        else {
+            printf("Gradients exceed undecided thresholds; comparing halves.\n");
+
+            // Split the adjusted gradient array into two halves
+            uint16_t midIndex = adjustedGradientSize / 2;
+            double leftMax = -INFINITY;
+            double rightMax = -INFINITY;
+
+            // Find the maximum gradient in the left half
+            for (uint16_t i = 0; i < midIndex; ++i) {
+                if (adjustedGradients[i] > leftMax) {
+                    leftMax = adjustedGradients[i];
+                }
+            }
+
+            // Find the maximum gradient in the right half
+            for (uint16_t i = midIndex; i < adjustedGradientSize; ++i) {
+                if (adjustedGradients[i] > rightMax) {
+                    rightMax = adjustedGradients[i];
+                }
+            }
+
+            // **Debugging Output**
+            printf("Left Max Gradient: %.6f, Right Max Gradient: %.6f\n", leftMax, rightMax);
+
+            // **Sub-step 6.3: Decide moveDirection based on the comparison**
+            if (rightMax > leftMax) {
+                printf("Right half has higher max gradient.\n");
+                moveDirection = RIGHT_SIDE;
+            } else if (leftMax > rightMax) {
+                printf("Left half has higher max gradient.\n");
+                moveDirection = LEFT_SIDE;
+            } else {
+                printf("Both halves have equal max gradients.\n");
+                moveDirection = UNDECIDED;
+            }
+        }
+    }
+
+    // **Step 7: Verify if we are on the peak**
+    if (moveDirection == UNDECIDED && increaseCount >= MIN_TREND_COUNT_FOR_PEAK && decreaseCount >= MIN_TREND_COUNT_FOR_PEAK) {
+        printf("Proceeding to peak verification.\n");
+
+        // Check that the increasing trend ends immediately before the decreasing trend starts
+        if (increaseEndIndex + 1 == decreaseStartIndex) {
+            printf("Increasing trend ends immediately before decreasing trend starts.\n");
+
+            // Check that there are no decreases within the increasing trend
+            bool increaseTrendConsistent = true;
+            for (uint16_t i = increaseStartIndex; i <= increaseEndIndex; ++i) {
+                if (gradients[i] <= 0.0) { // Assuming 0.0 as the threshold for positivity
+                    increaseTrendConsistent = false;
+                    printf("Decrease found within increasing trend at index %u.\n", i);
+                    break;
+                }
+            }
+
+            // Check that there are no increases within the decreasing trend
+            bool decreaseTrendConsistent = true;
+            for (uint16_t i = decreaseStartIndex; i <= decreaseEndIndex; ++i) {
+                if (gradients[i] >= 0.0) { // Assuming 0.0 as the threshold for negativity
+                    decreaseTrendConsistent = false;
+                    printf("Increase found within decreasing trend at index %u.\n", i);
+                    break;
+                }
+            }
+
+            // If both trends are consistent and uninterrupted
+            if (increaseTrendConsistent && decreaseTrendConsistent) {
+                printf("Both increasing and decreasing trends are consistent and uninterrupted.\n");
+                moveDirection = ON_PEAK;
+            } else {
+                printf("Trends are not consistent; conditions for being on the peak are not met.\n");
+            }
+        } else {
+            printf("Increasing and decreasing trends are not consecutive.\n");
+        }
+    }
+
+    // **Step 8: Output a warning if the moveDirection is still undecided**
+    if (moveDirection == UNDECIDED) {
+        printf("Warning: Move direction is undecided based on gradient analysis.\n");
+    }
+
+    // **Step 9: Return the determined moveDirection**
+    return moveDirection;
+}
+
 
 /**
  * @brief Identifies gradient trends within a window using RLS regression and MAD-based statistics.
@@ -487,7 +798,7 @@ GradientTrendIndices findConsistentDecreaseInternal(
  *
  * @return void
  */
-void identifyTrends(
+PeakPosition identifyTrends(
     const double *values,
     uint16_t startIndex,
     uint16_t analysisLength,
@@ -525,7 +836,7 @@ void identifyTrends(
 
     if (count == 0) {
         DEBUG_PRINT_1("No gradients calculated. Exiting identifyTrends.\n");
-        return;
+        return UNDECIDED;
     }
 
     // Debugging: Finding the longest consistent increasing trend
@@ -643,9 +954,41 @@ void identifyTrends(
             DEBUG_PRINT_1("Invalid indices for decreasing trend. Skipping median and MAD calculation.\n");
         }
     }
+    
+    PeakPosition moveDirection = determineMoveDirection(
+        &longestIncrease,
+        &longestDecrease,
+        gradCalcResultAll.gradients,
+        count
+    );
+    
+    // Optionally, you can print or store the moveDirection
+    printf("Determined Move Direction: ");
+    switch (moveDirection) {
+        case LEFT_SIDE:
+            printf("LEFT_SIDE\n");
+            break;
+        case RIGHT_SIDE:
+            printf("RIGHT_SIDE\n");
+            break;
+        case ON_PEAK:
+            printf("ON_PEAK\n");
+            break;
+        case UNDECIDED:
+            printf("UNDECIDED\n");
+            break;
+        case NEGATIVE_UNDECIDED:
+            printf("NEGATIVE_UNDECIDED\n");
+            break;
+        default:
+            printf("UNKNOWN\n");
+            break;
+    }
 
     // Debugging: Completed the identifyTrends function
     DEBUG_PRINT_1("Completed identifyTrends.\n");
+    
+    return moveDirection;
 }
 
 /**
@@ -839,7 +1182,7 @@ void identifyGradientTrends(
 
     // Calculate gradients using the specified gradient function and identify trends
     printf("=== Calculating %s Gradients ===\n", gradientOrderStr);
-    identifyTrends(
+    PeakPosition moveDirection = identifyTrends(
         values,
         startIndex,
         analysisLength,
@@ -873,27 +1216,10 @@ void identifyGradientTrends(
                 printf("=== Detecting Significant %s Gradient Trends ===\n", gradientOrderStr);
             }
 
-            // Detect trends using the combined function
-            detectTrends(
-                gradCalcResultInc,
-                gradCalcResultDec,
-                trendResultBase,
-                trendType
-            );
+            // Since moveDirection is now obtained from identifyTrends, we can set it directly
+            *(trendResultBase->moveDirection) = moveDirection;
 
-            // Decide move direction based on detected trends
-            printf("Step: Deciding move direction based on detected %s gradients.\n", gradientOrderStr);
-            if (*(trendResultBase->moveAmount) > 0) {
-                if (gradCalcResultInc->size > gradCalcResultDec->size) {
-                    *(trendResultBase->moveDirection) = MOVE_RIGHT;
-                } else if (gradCalcResultInc->size < gradCalcResultDec->size) {
-                    *(trendResultBase->moveDirection) = MOVE_LEFT;
-                } else {
-                    *(trendResultBase->moveDirection) = ON_THE_PEAK;
-                }
-            } else {
-                *(trendResultBase->moveDirection) = NO_TREND;
-            }
+            // Optionally, you can remove or adjust any redundant moveDirection logic here
 
             // Print results based on trendType
             if (trendType == TREND_TYPE_ABSOLUTE) {
@@ -903,9 +1229,9 @@ void identifyGradientTrends(
                 printTrendDetails("Absolute Increase", &absResult->absoluteIncrease);
                 printTrendDetails("Absolute Decrease", &absResult->absoluteDecrease);
                 printf("Move Direction: %s\n\n",
-                       absResult->moveDirection == MOVE_RIGHT ? "MOVE_RIGHT" :
-                       (absResult->moveDirection == MOVE_LEFT ? "MOVE_LEFT" :
-                        (absResult->moveDirection == ON_THE_PEAK ? "ON_THE_PEAK" : "NO_TREND")));
+                       absResult->moveDirection == RIGHT_SIDE ? "MOVE_RIGHT" :
+                       (absResult->moveDirection == LEFT_SIDE ? "MOVE_LEFT" :
+                        (absResult->moveDirection == ON_PEAK ? "ON_THE_PEAK" : "NO_TREND")));
             } else { // TREND_TYPE_SIGNIFICANT
                 GradientTrendResultSignificant *sigResult = (GradientTrendResultSignificant *)trendResult;
                 printf("Significant %s Gradient Trends:\n", gradientOrderStr);
@@ -913,9 +1239,9 @@ void identifyGradientTrends(
                 printTrendDetails("Significant Increase", &sigResult->significantIncrease);
                 printTrendDetails("Significant Decrease", &sigResult->significantDecrease);
                 printf("Move Direction: %s\n\n",
-                       sigResult->moveDirection == MOVE_RIGHT ? "MOVE_RIGHT" :
-                       (sigResult->moveDirection == MOVE_LEFT ? "MOVE_LEFT" :
-                        (sigResult->moveDirection == ON_THE_PEAK ? "ON_THE_PEAK" : "NO_TREND")));
+                       sigResult->moveDirection == RIGHT_SIDE ? "MOVE_RIGHT" :
+                       (sigResult->moveDirection == LEFT_SIDE ? "MOVE_LEFT" :
+                        (sigResult->moveDirection == ON_PEAK ? "ON_THE_PEAK" : "NO_TREND")));
             }
 
             break;
@@ -994,30 +1320,11 @@ void identifyGradientTrends(
                 gradResult->absoluteDecrease.sumGradients = 0.0;
             }
 
-            // Decide move direction based on the detected trends
-            printf("Step: Deciding move direction based on detected %s gradients.\n", gradientOrderStr);
-            if (gradResult->absoluteIncrease.startIndex != UINT16_MAX && gradResult->absoluteDecrease.startIndex == UINT16_MAX) {
-                gradResult->moveDirection = MOVE_RIGHT;
-            } else if (gradResult->absoluteIncrease.startIndex == UINT16_MAX && gradResult->absoluteDecrease.startIndex != UINT16_MAX) {
-                gradResult->moveDirection = MOVE_LEFT;
-            } else if (gradResult->absoluteIncrease.startIndex != UINT16_MAX && gradResult->absoluteDecrease.startIndex != UINT16_MAX) {
-                // Both trends are valid; decide based on which has a longer consistent trend
-                uint16_t increaseTrendLength = gradResult->absoluteIncrease.endIndex - gradResult->absoluteIncrease.startIndex + 1;
-                uint16_t decreaseTrendLength = gradResult->absoluteDecrease.endIndex - gradResult->absoluteDecrease.startIndex + 1;
-
-                if (increaseTrendLength > decreaseTrendLength) {
-                    gradResult->moveDirection = MOVE_RIGHT;
-                } else if (increaseTrendLength < decreaseTrendLength) {
-                    gradResult->moveDirection = MOVE_LEFT;
-                } else {
-                    gradResult->moveDirection = ON_THE_PEAK;
-                }
-            } else {
-                gradResult->moveDirection = NO_TREND;
-            }
+            // Since moveDirection is now obtained from identifyTrends, set it directly
+            gradResult->moveDirection = moveDirection;
 
             // Determine if a significant peak exists
-            gradResult->isSignificantPeak = (gradResult->moveDirection == ON_THE_PEAK);
+            gradResult->isSignificantPeak = (gradResult->moveDirection == ON_PEAK);
 
             // Print details about the detected increases
             printTrendDetails("Increase", &gradResult->absoluteIncrease);
@@ -1026,18 +1333,19 @@ void identifyGradientTrends(
             printTrendDetails("Decrease", &gradResult->absoluteDecrease);
 
             // Print move direction
+            /*
             printf("Move Direction based on %s gradients: ", gradientOrderStr);
             switch (gradResult->moveDirection) {
-                case MOVE_RIGHT:
+                case RIGHT_SIDE:
                     printf("MOVE_RIGHT\n");
                     break;
-                case MOVE_LEFT:
+                case LEFT_SIDE:
                     printf("MOVE_LEFT\n");
                     break;
-                case ON_THE_PEAK:
+                case ON_PEAK:
                     printf("ON_THE_PEAK\n");
                     break;
-                case NO_TREND:
+                case UNDECIDED:
                     printf("NO_TREND\n");
                     break;
                 default:
@@ -1046,7 +1354,9 @@ void identifyGradientTrends(
             }
 
             // Additional separator for clarity in output
+            
             printf("============================================\n");
+            */
             break;
         }
 
@@ -1055,6 +1365,8 @@ void identifyGradientTrends(
             break;
     }
 }
+
+// ** OBSOLETE FUNCTION ** 
 
 /**
  * @brief Identifies the move direction based on gradient trends by splitting the gradient array into halves.
@@ -1157,85 +1469,4 @@ MoveDirection identifySplitMoveDirection(
     }
 }
 
-
-/**
- * @brief Wrapper function that identifies trends and detects the move direction.
- *
- * This function calculates the gradients using RLS polynomial regression by calling `identifyTrends`,
- * and then it uses those gradients to determine the move direction by calling `detectTrends`.
- * It encapsulates the entire process of gradient calculation and trend detection, simplifying the usage.
- *
- * @param values             Array of data points to analyze.
- * @param startIndex         The starting index in the values array.
- * @param analysisLength     The number of data points to include in the gradient analysis window.
- * @param degree             The degree of the polynomial used for regression.
- * @param trendType          The type of trend detection to perform.
- * @param trendResult        Pointer to store the trend detection result.
- * @param calculate_gradient Function pointer to the gradient calculation function.
- *
- * @return MoveDirection The determined move direction based on trend analysis.
- */
-/* 
-MoveDirection identifyAndDetectTrends( //şu anki hali anlamsız. 
-    const double *values,
-    uint16_t startIndex,
-    uint16_t analysisLength,
-    uint8_t degree,
-    GradientOrder gradientOrder,
-    TrendDetectionType trendType,
-    void *trendResult
-) {
-    GradientCalculationResult gradCalcResultInc;
-    GradientCalculationResult gradCalcResultDec;
-
-    // Initialize the gradient calculation results
-    memset(&gradCalcResultInc, 0, sizeof(GradientCalculationResult));
-    memset(&gradCalcResultDec, 0, sizeof(GradientCalculationResult));
-
-    // Identify gradients and trends
-    identifyGradientTrends(
-        values,
-        startIndex,
-        analysisLength,
-        degree,
-        gradientOrder,
-        trendType,
-        trendResult,
-        &gradCalcResultInc,
-        &gradCalcResultDec
-    );
-
-    // Check if any gradients have been calculated
-    if (gradCalcResultInc.size == 0 && gradCalcResultDec.size == 0) {
-        DEBUG_PRINT_1("No gradients calculated. Exiting identifyAndDetectTrends.\n");
-        return NO_TREND;
-    }
-
-    // Combine the gradients from both increasing and decreasing trends
-    double combinedGradients[MAX_WINDOW_SIZE * 2]; // Ensure the array is large enough
-    uint16_t totalSize = 0;
-
-    if (gradCalcResultInc.size > 0) {
-        memcpy(&combinedGradients[totalSize], gradCalcResultInc.gradients, gradCalcResultInc.size * sizeof(double));
-        totalSize += gradCalcResultInc.size;
-    }
-    if (gradCalcResultDec.size > 0) {
-        memcpy(&combinedGradients[totalSize], gradCalcResultDec.gradients, gradCalcResultDec.size * sizeof(double));
-        totalSize += gradCalcResultDec.size;
-    }
-
-    // Define thresholds based on median and MAD
-    double thresholdIncrease = (gradCalcResultInc.size > 0) ? (gradCalcResultInc.median + gradCalcResultInc.mad) : 0.0;
-    double thresholdDecrease = (gradCalcResultDec.size > 0) ? (gradCalcResultDec.median - gradCalcResultDec.mad) : 0.0;
-
-    // Call detectTrends to get a move direction
-    MoveDirection moveDirectionDetected = detectTrends(
-        combinedGradients,
-        totalSize,
-        thresholdIncrease,
-        thresholdDecrease
-    );
-
-    return moveDirectionDetected;
-}
-*/
+// ** OBSOLETE FUNCTION ** 
