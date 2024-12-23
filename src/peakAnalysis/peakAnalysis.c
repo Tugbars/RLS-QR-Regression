@@ -261,7 +261,7 @@ PeakAnalysisResult performPeakAnalysis(
     memset(&gradCalcResultDec, 0, sizeof(GradientCalculationResult));
 
     DEBUG_PRINT_2("GradientTrendResultAbsolute initialized.\n");
-    DEBUG_PRINT_3("Calling identifyGradientTrends with startIndex=%u, analysisLength=%u, degree=%u, gradientOrder=%d\n",
+    printf("Calling identifyGradientTrends with startIndex=%u, analysisLength=%u, degree=%u, gradientOrder=%d\n",
                   startIndex, analysisLength, degree, gradientOrder);
 
     // Perform Trend Detection
@@ -395,118 +395,136 @@ PeakAnalysisResult performPeakAnalysis(
  * @param start_index The starting index in the original data array corresponding to the first element of second_order_gradients.
  * @return QuadraticPeakAnalysisResult Struct containing the verification result and truncation flags.
  */
+/*************************************************************************
+ * @brief Verifies the detected peak by checking for consistent trends on both sides.
+ *
+ * This function:
+ *   1) Checks the left side for consistent positive second-order gradients,
+ *      allowing a limited number of inconsistencies.
+ *   2) Checks the right side for consistent negative second-order gradients,
+ *      also allowing limited inconsistencies.
+ *   3) Flags truncation if we run out of data on either side.
+ *   4) Declares the peak verified only if both sides pass the criteria.
+ *************************************************************************/
 QuadraticPeakAnalysisResult verify_quadratic_peak(
     const double *second_order_gradients,
+    uint16_t length,
     uint16_t peak_index,
     uint16_t start_index
 ) {
-    DEBUG_PRINT_1("Starting verification of quadratic peak.\n");
-    QuadraticPeakAnalysisResult result = { 
-        .peak_found = false, 
-        .peak_index = start_index + peak_index, 
-        .is_truncated_left = false, 
-        .is_truncated_right = false 
+    QuadraticPeakAnalysisResult result = {
+        .peak_found = false,
+        .peak_index = (start_index + peak_index),
+        .is_truncated_left = false,
+        .is_truncated_right = false
     };
-    uint16_t left_trend_count = 0;
+
+    /*************************************************************************
+     * Variable Declarations
+     *************************************************************************/
+    uint16_t left_trend_count  = 0;
     uint16_t right_trend_count = 0;
-    uint16_t inconsistency_count_left = 0;
+    uint16_t inconsistency_count_left  = 0;
     uint16_t inconsistency_count_right = 0;
 
-    // Debug statement
-    DEBUG_PRINT_2("Verifying peak at absolute index %u.\n", result.peak_index);
+    /*************************************************************************
+     * Debug
+     *************************************************************************/
+    printf("Verifying peak at absolute index %u.\n", result.peak_index);
 
-    // Analyze left side: consistent increasing trend
-    DEBUG_PRINT_3("Analyzing left side for consistent increasing trend.\n");
+    /*************************************************************************
+     * Left-Side Check: look for consistent POSITIVE gradients.
+     * We'll move left from `peak_index` down to 0 or until we exceed 
+     * allowable inconsistencies.
+     *************************************************************************/
     for (int i = peak_index; i > 0; --i) {
-        double gradient = second_order_gradients[i - 1];
-        DEBUG_PRINT_3("Left side gradient at relative index %d (absolute index %u): %.6f\n", i - 1, start_index + i - 1, gradient);
-        if (gradient > 0) {
+        double grad = second_order_gradients[i - 1];
+        if (grad > 0) {
             left_trend_count++;
-            DEBUG_PRINT_3("Gradient positive. Incremented left_trend_count to %u.\n", left_trend_count);
-            // Update the longest consistent increasing trend
             if (left_trend_count >= PEAK_VERIFICATION_MIN_CONSISTENT_TREND_COUNT) {
-                DEBUG_PRINT_3("Left trend count reached minimum consistent trend count.\n");
                 break;
             }
         } else {
+            // Not positive => inconsistency
             inconsistency_count_left++;
-            DEBUG_PRINT_3("Gradient non-positive. Incremented inconsistency_count_left to %u.\n", inconsistency_count_left);
             if (inconsistency_count_left > PEAK_VERIFICATION_ALLOWABLE_INCONSISTENCY_COUNT) {
-                DEBUG_PRINT_3("Inconsistency count exceeded allowable limit on the left side.\n");
                 break;
             }
         }
     }
 
-    // Check for truncation on the left side
+    // If we used nearly all available points to accumulate left trend, mark truncation
     if ((result.peak_index - left_trend_count) <= 0) {
         result.is_truncated_left = true;
-        DEBUG_PRINT_2("Left side of peak is truncated.\n");
     }
 
-    // Analyze right side: consistent decreasing trend
-    DEBUG_PRINT_3("Analyzing right side for consistent decreasing trend.\n");
-    for (uint16_t i = peak_index; i < (RLS_WINDOW - 1); ++i) {
-        double gradient = second_order_gradients[i + 1];
-        DEBUG_PRINT_3("Right side gradient at relative index %u (absolute index %u): %.6f\n", i + 1, start_index + i + 1, gradient);
-        if (gradient < 0) {
+    /*************************************************************************
+     * Right-Side Check: look for consistent NEGATIVE gradients.
+     * We'll move right from `peak_index` up to `length - 1` or until we exceed 
+     * allowable inconsistencies.
+     *************************************************************************/
+    for (uint16_t i = peak_index; i < (length - 1); ++i) {
+        double grad = second_order_gradients[i + 1];
+        if (grad < 0) {
             right_trend_count++;
-            DEBUG_PRINT_3("Gradient negative. Incremented right_trend_count to %u.\n", right_trend_count);
-            // Update the longest consistent decreasing trend
             if (right_trend_count >= PEAK_VERIFICATION_MIN_CONSISTENT_TREND_COUNT) {
-                DEBUG_PRINT_3("Right trend count reached minimum consistent trend count.\n");
                 break;
             }
         } else {
+            // Not negative => inconsistency
             inconsistency_count_right++;
-            DEBUG_PRINT_3("Gradient non-negative. Incremented inconsistency_count_right to %u.\n", inconsistency_count_right);
             if (inconsistency_count_right > PEAK_VERIFICATION_ALLOWABLE_INCONSISTENCY_COUNT) {
-                DEBUG_PRINT_3("Inconsistency count exceeded allowable limit on the right side.\n");
                 break;
             }
         }
     }
 
-    // Check for truncation on the right side
-    if ((result.peak_index + right_trend_count) >= (start_index + RLS_WINDOW - 1)) {
+    // If we used nearly all available points to accumulate right trend, mark truncation
+    if ((result.peak_index + right_trend_count) >= (start_index + length - 1)) {
         result.is_truncated_right = true;
-        DEBUG_PRINT_2("Right side of peak is truncated.\n");
     }
 
-    // Verify if the peak meets the trend criteria
-    if (left_trend_count >= PEAK_VERIFICATION_MIN_CONSISTENT_TREND_COUNT &&
-        right_trend_count >= PEAK_VERIFICATION_MIN_CONSISTENT_TREND_COUNT) {
+    /*************************************************************************
+     * Final Decision
+     *************************************************************************/
+    if ((left_trend_count  >= PEAK_VERIFICATION_MIN_CONSISTENT_TREND_COUNT) &&
+        (right_trend_count >= PEAK_VERIFICATION_MIN_CONSISTENT_TREND_COUNT)) {
         result.peak_found = true;
-        DEBUG_PRINT_1("Peak at index %u verified successfully.\n", result.peak_index);
+        printf("Peak at index %u verified successfully.\n", result.peak_index);
     } else {
-        DEBUG_PRINT_1("Peak at index %u failed verification.\n", result.peak_index);
+        printf("Peak at index %u failed verification.\n", result.peak_index);
     }
 
-    DEBUG_PRINT_1("Completed verification of quadratic peak.\n");
     return result;
 }
 
-
 /**
- * @brief Validates a detected peak by analyzing its curvature using second-order gradients.
+ * @brief Finds and verifies peaks in a data range using second-order gradients and a loop-based detection.
  *
- * The `verifyPeakValidity` function confirms the authenticity of a detected peak within a dataset
- * by examining the second-order gradients (curvature) around the peak. This verification ensures
- * that the peak exhibits the necessary concave-down characteristics on both sides, distinguishing
- * genuine peaks from random fluctuations or noise.
-
- * **Rationale:**
- * - **Second-Order Gradients:** Provide insight into the curvature of the data, ensuring the peak has a
- *   concave-down shape characteristic of true peaks.
- * - **Trend Consistency:** Verifies that the peak is part of a broader increasing and then decreasing
- *   trend, reducing the likelihood of false positives caused by isolated data points.
+ * This function:
+ *  1. Computes second-order gradients over an adjusted interval using `trackGradients`.
+ *  2. Loops through the gradients to detect sign changes (`> 0` to `< 0`).
+ *  3. Immediately verifies each detected candidate using `verify_quadratic_peak`.
+ *  4. Stops when a verified peak is found or completes the loop otherwise.
  *
  * @param values           Array of data points to analyze.
  * @param dataLength       Total number of data points in the `values` array.
  * @param increaseStart    Start index of the significant increase interval leading to the peak.
  * @param increaseEnd      End index of the significant increase interval where the peak is detected.
  * @param degree           Degree of the polynomial used for regression analysis.
+ * @return QuadraticPeakAnalysisResult containing verification results.
  */
+/*************************************************************************
+ * @brief Finds and verifies peaks in a data range using second-order gradients 
+ *        and a loop-based detection.
+ *
+ * This function:
+ *   1) Adjusts the start index to avoid underflow.
+ *   2) Computes second-order gradients over the adjusted interval via `trackGradients`.
+ *   3) Loops through the gradients to detect sign changes (+ to -).
+ *   4) Immediately verifies each candidate using `verify_quadratic_peak`.
+ *   5) Stops when a verified peak is found or if the loop ends.
+ *************************************************************************/
 QuadraticPeakAnalysisResult verifyPeakValidity(
     const double *values,
     uint16_t dataLength,
@@ -514,24 +532,24 @@ QuadraticPeakAnalysisResult verifyPeakValidity(
     uint16_t increaseEnd,
     uint8_t degree
 ) {
-    DEBUG_PRINT_1("Starting verification of peak validity.\n");
-    QuadraticPeakAnalysisResult verificationResult = { 
-        .peak_found = false, 
-        .peak_index = 0, 
-        .is_truncated_left = false, 
-        .is_truncated_right = false 
+    QuadraticPeakAnalysisResult result = {
+        .peak_found = false,
+        .peak_index = 0,
+        .is_truncated_left = false,
+        .is_truncated_right = false
     };
 
-    // Adjust the start index by subtracting the offset, ensuring it doesn't go below zero
-    uint16_t adjustedStartIndex = (increaseStart >= START_INDEX_OFFSET) ? (increaseStart - START_INDEX_OFFSET) : 0;
-    DEBUG_PRINT_2("Adjusted start index for gradient tracking: %u\n", adjustedStartIndex);
-    uint16_t adjustedAnalysisLength = increaseEnd - adjustedStartIndex + 1;
+    // 1) Adjust start index
+    uint16_t adjustedStartIndex = (increaseStart >= START_INDEX_OFFSET)
+                                      ? (increaseStart - START_INDEX_OFFSET)
+                                      : 0;
 
-    // Calculate second-order gradients over the adjusted interval
+    // 2) Prepare to compute second-order gradients
+    //    (Make sure trackGradients is declared somewhere!)
     GradientCalculationResult secondOrderGradients;
     memset(&secondOrderGradients, 0, sizeof(GradientCalculationResult));
-    DEBUG_PRINT_3("Calling trackGradients to compute second-order gradients.\n");
 
+    // 3) Compute second-order gradients
     trackGradients(
         values,
         dataLength,
@@ -541,17 +559,35 @@ QuadraticPeakAnalysisResult verifyPeakValidity(
         &secondOrderGradients
     );
 
-    DEBUG_PRINT_2("Second-order gradients calculated. Number of gradients: %u\n", secondOrderGradients.size);
+    // 4) Loop to detect sign changes
+    for (uint16_t i = 1; i < secondOrderGradients.size; ++i) {
+        if (secondOrderGradients.gradients[i - 1] > 0.0 &&
+            secondOrderGradients.gradients[i] < 0.0)
+        {
+            // Candidate peak => verify immediately
+            result = verify_quadratic_peak(
+                secondOrderGradients.gradients,
+                secondOrderGradients.size,  // pass length to avoid out-of-bounds
+                i,                          // relative peak index
+                adjustedStartIndex
+            );
 
-    // Verify the peak using the verify_quadratic_peak function
-    verificationResult = verify_quadratic_peak(
-        secondOrderGradients.gradients,
-        increaseEnd - adjustedStartIndex, // peak_index_relative within the gradients array
-        adjustedStartIndex
-    );
+            if (result.peak_found) {
+                printf("Verified peak found at absolute index %u.\n", result.peak_index);
+                break;
+            } else {
+                printf("Candidate at relative index %u (abs %u) failed verification.\n",
+                       i, adjustedStartIndex + i);
+            }
+        }
+    }
 
-    DEBUG_PRINT_1("Peak validity verification completed.\n");
-    return verificationResult;
+    // 5) If no verified peak found, result.peak_found remains false
+    if (!result.peak_found) {
+        printf("No verified peak found in the specified window.\n");
+    }
+
+    return result;
 }
 
 /**
