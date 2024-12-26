@@ -54,6 +54,7 @@
 
 #define CENTERING_RATIO 2;  /**< Adjust this ratio to control centering aggressiveness */
 
+#define NEGATIVE_GRADIENT_THRESHOLD (-1.0)
 
 // Define debug levels
 #define DEBUG_LEVEL 0  // Set to 0, 1, 2, or 3 to enable different levels of debugging
@@ -755,3 +756,140 @@ PeakCenteringResult identifyAndCalculateCentering(
     return centerResult;
 }
 
+
+/**
+ * @brief Checks for a continuous negative trend in the second-order gradients,
+ *        ensuring the trend starts after a specified minimum ratio of the window
+ *        and reaches a defined negative gradient threshold.
+ *
+ * This function computes second-order gradients for a dataset and determines whether
+ * there is a consecutive negative trend of at least 5 values that starts after a
+ * specified portion (`min_ratio`) of the window and reaches a gradient of `-1.0` or below.
+ * The results are stored in the provided `GradientCalculationResult` structure.
+ *
+ * @param measurements  Array of measurement values to analyze.
+ * @param length        The number of data points in the `measurements` array.
+ * @param start_index   The starting index in the `measurements` array to begin analysis.
+ * @param min_ratio     The minimum ratio (e.g., 0.3 for 30%) indicating where the negative
+ *                      trend should start within the window.
+ * @param result        Pointer to a `GradientCalculationResult` structure to store the results.
+ * @return `true` if a valid negative trend is found, starts after `min_ratio` of the window,
+ *         and reaches the threshold of `-1.0` or below; `false` otherwise.
+ */
+bool peakAnalysis_checkPeakCentering(
+    const double *measurements,
+    uint16_t length,
+    uint16_t start_index,
+    double min_ratio,
+    GradientCalculationResult *result
+) {
+    DEBUG_PRINT_3("Entering peakAnalysis_checkPeakCentering with start_index=%u, length=%u, min_ratio=%.2f\n", 
+                  start_index, length, min_ratio);
+
+    // Initialize the result structure
+    result->size = 0;
+    result->startIndex = 0;
+    result->endIndex = 0;
+    result->median = 0.0;  // Initialize median if needed
+    result->mad = 0.0;     // Initialize MAD if needed
+
+    // Track gradients using second-order polynomial regression
+    trackGradients(
+        measurements,
+        length,
+        start_index,
+        3,  // Degree = 3 for second-order gradients
+        calculate_first_order_gradient,
+        result
+    );
+
+    DEBUG_PRINT_3("Collected %u gradients.\n", result->size);
+
+    // Ensure there are enough gradients to detect a trend
+    if (result->size < PEAK_VERIFICATION_MIN_CONSISTENT_TREND_COUNT) {  // At least 5 gradients needed for a valid trend
+        DEBUG_PRINT_1("Not enough gradients to determine a negative trend.\n");
+        return false;
+    }
+
+    // Calculate the minimum acceptable index based on min_ratio
+    double min_acceptable_index_f = min_ratio * (double)result->size;
+    uint16_t min_acceptable_index = (uint16_t)ceil(min_acceptable_index_f); // Rounds up to the nearest whole number
+
+    DEBUG_PRINT_3("Minimum acceptable trend start index: %u (min_ratio=%.2f)\n", 
+                  min_acceptable_index, min_ratio);
+
+    uint16_t consecutive_negatives = 0;
+    uint16_t trend_start_index = 0;
+
+    // Iterate through the gradients to find a valid negative trend
+    for (uint16_t i = 0; i < result->size; ++i) {
+        DEBUG_PRINT_2("Inspecting gradient[%u] = %.2f\n", i, result->gradients[i]);
+
+        if (result->gradients[i] < 0.0) {
+            if (consecutive_negatives == 0) {
+                // Potential start of a new negative trend
+                trend_start_index = i;
+                DEBUG_PRINT_2("Potential new negative trend starting at index %u.\n", trend_start_index);
+            }
+
+            consecutive_negatives++; // Increment the count of consecutive negatives
+            DEBUG_PRINT_2("Consecutive negatives count: %u\n", consecutive_negatives);
+
+            // Check if we have at least 5 consecutive negative gradients
+            if (consecutive_negatives >= PEAK_VERIFICATION_MIN_CONSISTENT_TREND_COUNT) {
+                DEBUG_PRINT_2("Found %u consecutive negative gradients starting at index %u.\n", 
+                              consecutive_negatives, trend_start_index);
+
+                // Verify if the trend starts after the min_ratio threshold
+                if (trend_start_index >= min_acceptable_index) {
+                    DEBUG_PRINT_2("Trend starts after min_ratio threshold. Verifying further.\n");
+
+                    // Within the trend, check if any gradient reaches <= -1.0
+                    bool threshold_reached = false;
+                    uint16_t threshold_index = 0;
+
+                    for (uint16_t j = trend_start_index; j <= i; ++j) {
+                        DEBUG_PRINT_3("Checking gradient[%u] = %.2f against threshold %.2f\n", 
+                                      j, result->gradients[j], NEGATIVE_GRADIENT_THRESHOLD);
+
+                        if (result->gradients[j] <= NEGATIVE_GRADIENT_THRESHOLD) {
+                            threshold_reached = true;
+                            threshold_index = j;
+                            DEBUG_PRINT_2("Threshold %.2f reached at index %u.\n", NEGATIVE_GRADIENT_THRESHOLD, threshold_index);
+                            break;  // Stop at the first occurrence
+                        }
+                    }
+
+                    if (threshold_reached) {
+                        result->startIndex = start_index + trend_start_index;
+                        result->endIndex = start_index + i;
+                        printf("Found valid negative trend: startIndex=%u, endIndex=%u, gradient=%.2f.\n", 
+                                      result->startIndex, result->endIndex, result->gradients[i]);
+                        return true;
+                    } else {
+                        DEBUG_PRINT_2("Negative trend starts after min_ratio but does not reach the threshold of %.2f.\n", 
+                                      NEGATIVE_GRADIENT_THRESHOLD);
+                        // Reset and continue searching for another valid trend
+                        consecutive_negatives = 0;
+                    }
+                } else {
+                    DEBUG_PRINT_2("Negative trend starts at index %u, which is before the minimum acceptable index %u.\n", 
+                                  trend_start_index, min_acceptable_index);
+                    // Reset and continue searching
+                    consecutive_negatives = 0;
+                }
+            }
+        } else {
+            // Reset the count if the trend is broken
+            if (consecutive_negatives > 0) {
+                DEBUG_PRINT_3("Negative trend broken at index %u after %u consecutive negatives.\n", 
+                              i, consecutive_negatives);
+            }
+            consecutive_negatives = 0;
+        }
+    }
+
+    // No valid trend found that meets the min_ratio and threshold requirements
+    DEBUG_PRINT_1("No valid negative trend found that starts after the minimum ratio of the window and reaches the threshold.\n");
+    return false;
+}
