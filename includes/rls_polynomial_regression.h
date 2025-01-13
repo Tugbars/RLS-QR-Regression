@@ -113,6 +113,10 @@ void trackGradients(
     GradientCalculationResult *result
 );
 
+void trackFirstOrderGradients(const double *measurements, uint16_t length, uint16_t start_index, uint8_t degree);
+void trackSecondOrderGradients(const double *measurements, uint16_t length, uint16_t start_index, uint8_t degree);
+
+
 
 
 #endif // RLS_POLYNOMIAL_REGRESSION_H
