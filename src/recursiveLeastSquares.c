@@ -283,20 +283,18 @@ static int needs_reorthogonalization(const RegressionState *state, int num_coeff
  * @param degree Degree of the Chebyshev polynomial basis.
  * @param max_num_points Maximum number of data points (sliding window size).
  */
-void initialize_regression_state(RegressionState *state, int degree, unsigned short max_num_points)
-{
-  state->polynomial_degree = degree;
-  state->current_num_points = 0;
-  state->max_num_points = max_num_points;
-  state->oldest_data_index = 0;
-  state->total_data_points_added = 0;
-  memset(state->coefficients, 0, sizeof(state->coefficients));
-  memset(state->upper_triangular_R, 0, sizeof(state->upper_triangular_R));
-  memset(state->Q_transpose_b, 0, sizeof(state->Q_transpose_b));
-  for (int i = 0; i <= degree; ++i)
-  {
-    state->col_permutations[i] = i;
-  }
+void initialize_regression_state(RegressionState *state, int degree, unsigned short max_num_points) {
+    state->polynomial_degree = degree;
+    state->current_num_points = 0;
+    state->max_num_points = max_num_points;
+    state->oldest_data_index = 0;
+    state->total_data_points_added = 0;
+    memset(state->coefficients, 0, sizeof(state->coefficients));
+    memset(state->upper_triangular_R, 0, sizeof(state->upper_triangular_R));
+    memset(state->Q_transpose_b, 0, sizeof(state->Q_transpose_b));
+    for (int i = 0; i <= degree; ++i) {
+        state->col_permutations[i] = i;
+    }
 }
 
 /**
@@ -347,7 +345,6 @@ static void updateQR_AddRow(RegressionState *state, const double *new_row, doubl
             Q_tb_new = -s * temp_b + c * Q_tb_new;
         }
     }
-  }
 }
 
 /**
@@ -381,7 +378,6 @@ static void updateQR_RemoveRow(RegressionState *state, const double *old_row, do
             Q_tb_old = s * temp_b + c * Q_tb_old;
         }
     }
-  }
 }
 
 /**
@@ -390,23 +386,21 @@ static void updateQR_RemoveRow(RegressionState *state, const double *old_row, do
  * @param state Pointer to the current RegressionState.
  * @param data Pointer to the array of raw data points.
  */
-static void recompute_qr_decomposition(RegressionState *state, const MqsRawDataPoint_t *data)
-{
-  int num_data = state->current_num_points;
-  int num_coeff = state->polynomial_degree + 1;
-  int total_rows = num_data + num_coeff;
+static void recompute_qr_decomposition(RegressionState *state, const MqsRawDataPoint_t *data) {
+    int num_data = state->current_num_points;
+    int num_coeff = state->polynomial_degree + 1;
+    int total_rows = num_data + num_coeff;
 #ifdef USE_GLOBAL_SCRATCH_SPACE
-  if (total_rows > MAX_TOTAL_ROWS)
-    return;
+    if (total_rows > MAX_TOTAL_ROWS) return;
 #else
-  double augmented_matrix_A[total_rows][MAX_POLYNOMIAL_DEGREE + 1];
-  double augmented_vector_b[total_rows];
+    double augmented_matrix_A[total_rows][MAX_POLYNOMIAL_DEGREE + 1];
+    double augmented_vector_b[total_rows];
 #endif
     memset(augmented_matrix_A, 0, sizeof(double) * total_rows * (MAX_POLYNOMIAL_DEGREE + 1));
 #ifdef USE_GLOBAL_SCRATCH_SPACE
-  memset(augmented_vector_b, 0, sizeof(double) * total_rows);
+    memset(augmented_vector_b, 0, sizeof(double) * total_rows);
 #else
-  memset(augmented_vector_b, 0, sizeof(double) * total_rows);
+    memset(augmented_vector_b, 0, sizeof(double) * total_rows);
 #endif
 
     int col_indices[MAX_POLYNOMIAL_DEGREE + 1];
@@ -434,9 +428,9 @@ static void recompute_qr_decomposition(RegressionState *state, const MqsRawDataP
         int row = num_data + i;
         augmented_matrix_A[row][i] = sqrt(REGULARIZATION_PARAMETER);
 #ifdef USE_GLOBAL_SCRATCH_SPACE
-    augmented_vector_b[row] = 0.0;
+        augmented_vector_b[row] = 0.0;
 #else
-    augmented_vector_b[row] = 0.0;
+        augmented_vector_b[row] = 0.0;
 #endif
     }
 
@@ -514,53 +508,7 @@ static void recompute_qr_decomposition(RegressionState *state, const MqsRawDataP
             state->upper_triangular_R[i][j] = augmented_matrix_A[i][j];
         state->Q_transpose_b[i] = augmented_vector_b[i];
     }
-    sigma = sqrt(sigma);
-    if (sigma < TOL)
-      continue;
-    double vk = augmented_matrix_A[k][k] + ((augmented_matrix_A[k][k] >= 0.0) ? sigma : -sigma);
-    if (fabs(vk) < TOL)
-      continue;
-    double beta = 1.0 / (sigma * vk);
-    for (int i = k + 1; i < total_rows; ++i)
-      augmented_matrix_A[i][k] /= vk;
-    augmented_matrix_A[k][k] = -sigma;
-    // Apply the Householder transformation to remaining columns
-    for (int j = k + 1; j < num_coeff; ++j)
-    {
-      double s = 0.0;
-      for (int i = k; i < total_rows; ++i)
-        s += augmented_matrix_A[i][k] * augmented_matrix_A[i][j];
-      s *= beta;
-      for (int i = k; i < total_rows; ++i)
-        augmented_matrix_A[i][j] -= augmented_matrix_A[i][k] * s;
-    }
-    // Apply transformation to the right-hand side vector
-    double s = 0.0;
-    for (int i = k; i < total_rows; ++i)
-      s += augmented_matrix_A[i][k] * augmented_vector_b[i];
-    s *= beta;
-    for (int i = k; i < total_rows; ++i)
-      augmented_vector_b[i] -= augmented_matrix_A[i][k] * s;
-    // Zero out the subdiagonal elements explicitly
-    for (int i = k + 1; i < total_rows; ++i)
-      augmented_matrix_A[i][k] = 0.0;
-    // Update the column norms for remaining columns
-    for (int j = k + 1; j < num_coeff; ++j)
-    {
-      double sum = 0.0;
-      for (int i = k + 1; i < total_rows; ++i)
-        sum += augmented_matrix_A[i][j] * augmented_matrix_A[i][j];
-      col_norms[j] = sqrt(sum);
-    }
-  }
-  // Extract the upper-triangular matrix R and the transformed right-hand side vector Q_transpose_b
-  for (int i = 0; i < num_coeff; ++i)
-  {
-    for (int j = i; j < num_coeff; ++j)
-      state->upper_triangular_R[i][j] = augmented_matrix_A[i][j];
-    state->Q_transpose_b[i] = augmented_vector_b[i];
-  }
-  memcpy(state->col_permutations, col_indices, sizeof(int) * num_coeff);
+    memcpy(state->col_permutations, col_indices, sizeof(int) * num_coeff);
 }
 
 /**
@@ -597,20 +545,17 @@ static inline void solve_for_coefficients(RegressionState *state) {
  * @param size The dimension of R.
  * @return The computed 1-norm.
  */
-static double compute_R_norm_1(const double R[MAX_POLYNOMIAL_DEGREE + 1][MAX_POLYNOMIAL_DEGREE + 1], int size)
-{
-  double norm = 0.0;
-  for (int j = 0; j < size; j++)
-  {
-    double colSum = 0.0;
-    for (int i = 0; i <= j; i++)
-    {
-      colSum += fabs(R[i][j]);
+static double compute_R_norm_1(const double R[MAX_POLYNOMIAL_DEGREE+1][MAX_POLYNOMIAL_DEGREE+1], int size) {
+    double norm = 0.0;
+    for (int j = 0; j < size; j++) {
+        double colSum = 0.0;
+        for (int i = 0; i <= j; i++) {
+            colSum += fabs(R[i][j]);
+        }
+        if (colSum > norm)
+            norm = colSum;
     }
-    if (colSum > norm)
-      norm = colSum;
-  }
-  return norm;
+    return norm;
 }
 
 /**
@@ -622,27 +567,10 @@ static double compute_R_norm_1(const double R[MAX_POLYNOMIAL_DEGREE + 1][MAX_POL
  * @param size The dimension of R.
  * @return Estimated 1-norm of R⁻¹.
  */
-static double estimate_R_inverse_norm_1(const double R[MAX_POLYNOMIAL_DEGREE + 1][MAX_POLYNOMIAL_DEGREE + 1], int size)
-{
-  double x[MAX_POLYNOMIAL_DEGREE + 1], z[MAX_POLYNOMIAL_DEGREE + 1];
-  for (int i = 0; i < size; i++)
-  {
-    x[i] = 1.0 / size;
-  }
-  int maxIter = 5;
-  double prevEst = 0.0, est = 0.0;
-  const double tolIter = 1e-1;
-  for (int iter = 0; iter < maxIter; iter++)
-  {
-    // Solve R*z = x via back substitution
-    for (int i = size - 1; i >= 0; i--)
-    {
-      double sum = x[i];
-      for (int j = i + 1; j < size; j++)
-      {
-        sum -= R[i][j] * z[j];
-      }
-      z[i] = sum / R[i][i];
+static double estimate_R_inverse_norm_1(const double R[MAX_POLYNOMIAL_DEGREE+1][MAX_POLYNOMIAL_DEGREE+1], int size) {
+    double x[MAX_POLYNOMIAL_DEGREE+1], z[MAX_POLYNOMIAL_DEGREE+1];
+    for (int i = 0; i < size; i++) {
+        x[i] = 1.0 / size;
     }
     int maxIter = 5;
     double prevEst = 0.0, est = 0.0;
@@ -667,17 +595,7 @@ static double estimate_R_inverse_norm_1(const double R[MAX_POLYNOMIAL_DEGREE + 1
         memcpy(x, z, sizeof(double)*size);
         prevEst = est;
     }
-    // Normalize z
-    for (int i = 0; i < size; i++)
-    {
-      z[i] /= est;
-    }
-    if (fabs(est - prevEst) < tolIter * est)
-      break;
-    memcpy(x, z, sizeof(double) * size);
-    prevEst = est;
-  }
-  return est;
+    return est;
 }
 
 /**
@@ -687,11 +605,10 @@ static double estimate_R_inverse_norm_1(const double R[MAX_POLYNOMIAL_DEGREE + 1
  * @param size The dimension of R.
  * @return The estimated condition number.
  */
-static double compute_condition_number_improved(const double R[MAX_POLYNOMIAL_DEGREE + 1][MAX_POLYNOMIAL_DEGREE + 1], int size)
-{
-  double norm_R = compute_R_norm_1(R, size);
-  double norm_R_inv = estimate_R_inverse_norm_1(R, size);
-  return norm_R * norm_R_inv;
+static double compute_condition_number_improved(const double R[MAX_POLYNOMIAL_DEGREE+1][MAX_POLYNOMIAL_DEGREE+1], int size) {
+    double norm_R = compute_R_norm_1(R, size);
+    double norm_R_inv = estimate_R_inverse_norm_1(R, size);
+    return norm_R * norm_R_inv;
 }
 
 /**
@@ -829,7 +746,6 @@ void add_data_point_to_regression(RegressionState *state, const MqsRawDataPoint_
         }
         TRANSITION_DEBUG("Applied forgetting factor (λ=%.2f)\n", FORGETTING_FACTOR);
     }
-  }
 #endif
 
     /* Step 3: Compute the Chebyshev basis for the new data point and update QR via Givens rotations */
@@ -956,3 +872,5 @@ void trackGradients(const MqsRawDataPoint_t *measurements, unsigned short length
         result->valid = 1;
     TRANSITION_DEBUG("Gradient tracking completed with %u gradients computed.\n", result->size);
 }
+
+
