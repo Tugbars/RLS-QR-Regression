@@ -53,12 +53,11 @@ typedef struct {
 
 /**
  * @brief Structure for storing computed gradients.
- *
- * Contains an array of gradients computed from the regression solution.
  */
 typedef struct {
     double gradients[RLS_WINDOW];  /**< Array of computed gradients */
     unsigned short size;           /**< Number of gradients stored */
+    int valid;                     /**< Flag indicating if the gradients are valid */
 } GradientCalculationResult;
 
 /* ********************************************************************
